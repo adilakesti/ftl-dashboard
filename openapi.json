@@ -38,15 +38,27 @@
     },
     "/api/submissions/upload": {
       "post": {
-        "summary": "Sales: upload a CSV of OD + vehicle-type rate requests; computes and stores a final rate + remarks per row.",
+        "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests; computes and stores a final rate + remarks per row.",
         "requestBody": {
           "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "properties": { "file": { "type": "string", "format": "binary" } },
-                "required": ["file"]
+                "properties": {
+                  "file": { "type": "string", "format": "binary" },
+                  "shipper_name": { "type": "string" },
+                  "sales_pic": { "type": "string" },
+                  "shipper_status": { "type": "string", "enum": ["new", "existing"] },
+                  "potential_monthly_revenue": { "type": "string", "description": "Numeric string, IDR." },
+                  "commodity_type": { "type": "string" },
+                  "high_value_fragile": { "type": "boolean" },
+                  "add_ons_json": {
+                    "type": "string",
+                    "description": "JSON-encoded array of {label, value?} objects; recorded as metadata, doesn't affect Final Rate."
+                  }
+                },
+                "required": ["file", "shipper_name", "sales_pic", "shipper_status"]
               }
             }
           }
@@ -254,13 +266,27 @@
           "matched_vendor": { "type": "string", "nullable": true }
         }
       },
+      "AddOn": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "value": { "type": "string", "nullable": true }
+        }
+      },
       "Submission": {
         "type": "object",
         "properties": {
           "id": { "type": "integer" },
           "uploaded_by": { "type": "string" },
           "filename": { "type": "string", "nullable": true },
-          "created_at": { "type": "string" }
+          "created_at": { "type": "string" },
+          "shipper_name": { "type": "string", "nullable": true },
+          "sales_pic": { "type": "string", "nullable": true },
+          "shipper_status": { "type": "string", "nullable": true, "enum": ["new", "existing", null] },
+          "potential_monthly_revenue": { "type": "number", "nullable": true },
+          "commodity_type": { "type": "string", "nullable": true },
+          "high_value_fragile": { "type": "boolean" },
+          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
         }
       },
       "SubmissionList": {

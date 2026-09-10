@@ -7,9 +7,10 @@ table (user_roles) keyed by email; an unprovisioned email is shown a
 """
 import csv
 import io
+import json
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 import db
@@ -88,11 +89,23 @@ class SubmissionRow(BaseModel):
     matched_vendor: str | None
 
 
+class AddOn(BaseModel):
+    label: str
+    value: str | None = None
+
+
 class Submission(BaseModel):
     id: int
     uploaded_by: str
     filename: str | None
     created_at: str
+    shipper_name: str | None = None
+    sales_pic: str | None = None
+    shipper_status: str | None = None
+    potential_monthly_revenue: float | None = None
+    commodity_type: str | None = None
+    high_value_fragile: bool = False
+    add_ons: list[AddOn] = []
 
 
 class SubmissionList(BaseModel):
@@ -154,18 +167,82 @@ def _parse_csv(content: bytes) -> list[dict]:
     return rows
 
 
+def _row_to_submission(r) -> Submission:
+    add_ons_raw = r[10]
+    add_ons = [AddOn(**a) for a in json.loads(add_ons_raw)] if add_ons_raw else []
+    return Submission(
+        id=r[0],
+        uploaded_by=r[1],
+        filename=r[2],
+        created_at=str(r[3]),
+        shipper_name=r[4],
+        sales_pic=r[5],
+        shipper_status=r[6],
+        potential_monthly_revenue=float(r[7]) if r[7] is not None else None,
+        commodity_type=r[8],
+        high_value_fragile=bool(r[9]),
+        add_ons=add_ons,
+    )
+
+
+SUBMISSION_COLUMNS = (
+    "id, uploaded_by, filename, created_at, shipper_name, sales_pic, shipper_status, "
+    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons"
+)
+
+
 @app.post("/api/submissions/upload", response_model=SubmissionDetail, status_code=201)
-async def upload_submission(request: Request, file: UploadFile):
+async def upload_submission(
+    request: Request,
+    file: UploadFile,
+    shipper_name: str = Form(...),
+    sales_pic: str = Form(...),
+    shipper_status: str = Form(...),
+    potential_monthly_revenue: str | None = Form(None),
+    commodity_type: str | None = Form(None),
+    high_value_fragile: bool = Form(False),
+    add_ons_json: str | None = Form(None),
+):
     email = await require_role(request, "sales")
     content = await file.read()
     rows = _parse_csv(content)
     if not rows:
         raise HTTPException(400, "No usable rows found in CSV")
 
+    if shipper_status not in ("new", "existing"):
+        raise HTTPException(400, "shipper_status must be 'new' or 'existing'")
+
+    revenue = None
+    if potential_monthly_revenue:
+        try:
+            revenue = float(potential_monthly_revenue.replace(",", ""))
+        except ValueError:
+            revenue = None
+
+    add_ons_list = []
+    if add_ons_json:
+        try:
+            add_ons_list = [AddOn(**a).model_dump() for a in json.loads(add_ons_json)]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise HTTPException(400, "add_ons_json is not valid JSON")
+
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO submissions (uploaded_by, filename) VALUES (%s, %s)",
-            (email, file.filename),
+            """INSERT INTO submissions
+               (uploaded_by, filename, shipper_name, sales_pic, shipper_status,
+                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                email,
+                file.filename,
+                shipper_name,
+                sales_pic,
+                shipper_status,
+                revenue,
+                commodity_type,
+                high_value_fragile,
+                json.dumps(add_ons_list) if add_ons_list else None,
+            ),
         )
         submission_id = cur.lastrowid
 
@@ -205,13 +282,13 @@ async def upload_submission(request: Request, file: UploadFile):
             )
 
         await cur.execute(
-            "SELECT id, uploaded_by, filename, created_at FROM submissions WHERE id = %s",
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s",
             (submission_id,),
         )
         srow = await cur.fetchone()
 
     return SubmissionDetail(
-        submission=Submission(id=srow[0], uploaded_by=srow[1], filename=srow[2], created_at=str(srow[3])),
+        submission=_row_to_submission(srow),
         rows=result_rows,
     )
 
@@ -221,13 +298,11 @@ async def list_submissions(request: Request):
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, uploaded_by, filename, created_at FROM submissions WHERE uploaded_by = %s ORDER BY id DESC",
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE uploaded_by = %s ORDER BY id DESC",
             (email,),
         )
         rows = await cur.fetchall()
-    return SubmissionList(
-        submissions=[Submission(id=r[0], uploaded_by=r[1], filename=r[2], created_at=str(r[3])) for r in rows]
-    )
+    return SubmissionList(submissions=[_row_to_submission(r) for r in rows])
 
 
 @app.get("/api/submissions/{submission_id}", response_model=SubmissionDetail)
@@ -235,7 +310,7 @@ async def get_submission(submission_id: int, request: Request):
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, uploaded_by, filename, created_at FROM submissions WHERE id = %s AND uploaded_by = %s",
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
             (submission_id, email),
         )
         srow = await cur.fetchone()
@@ -251,7 +326,7 @@ async def get_submission(submission_id: int, request: Request):
         rows = await cur.fetchall()
 
     return SubmissionDetail(
-        submission=Submission(id=srow[0], uploaded_by=srow[1], filename=srow[2], created_at=str(srow[3])),
+        submission=_row_to_submission(srow),
         rows=[
             SubmissionRow(
                 id=r[0],
