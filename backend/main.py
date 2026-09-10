@@ -13,8 +13,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 import db
+import master_rates
 import pricing
-import sheets
 
 
 @asynccontextmanager
@@ -171,8 +171,7 @@ async def upload_submission(request: Request, file: UploadFile):
 
         result_rows = []
         for row in rows:
-            lane = sheets.find_lane(row["origin"], row["destination"], row["vehicle_type"])
-            costs = lane["costs"] if lane else {}
+            costs = await master_rates.find_costs(db.pool(), row["origin"], row["destination"], row["vehicle_type"])
             result = pricing.compute_final_rate(costs, row["target_rate"])
 
             await cur.execute(
@@ -446,3 +445,39 @@ async def vm_summary(request: Request):
         seeking_lower_rate=[to_lane(r) for r in seeking],
         missing_lanes=[to_lane(r) for r in missing],
     )
+
+
+# ---------------------------------------------------------------------------
+# Master vendor-rate data (VM uploads a CSV export of the "Database Rate" tab)
+# ---------------------------------------------------------------------------
+
+
+class MasterRateUploadResult(BaseModel):
+    row_count: int
+
+
+class MasterRateMeta(BaseModel):
+    uploaded_by: str | None
+    filename: str | None
+    row_count: int | None
+    created_at: str | None
+
+
+@app.post("/api/master-rates/upload", response_model=MasterRateUploadResult, status_code=201)
+async def upload_master_rates(request: Request, file: UploadFile):
+    email = await require_role(request, "vm")
+    content = await file.read()
+    lanes = master_rates.parse_csv(content)
+    if not lanes:
+        raise HTTPException(400, "No usable lane rows found in CSV")
+    row_count = await master_rates.replace_all(db.pool(), lanes, email, file.filename)
+    return MasterRateUploadResult(row_count=row_count)
+
+
+@app.get("/api/master-rates/meta", response_model=MasterRateMeta)
+async def master_rates_meta(request: Request):
+    await require_role(request, "vm")
+    meta = await master_rates.last_upload_meta(db.pool())
+    if not meta:
+        return MasterRateMeta(uploaded_by=None, filename=None, row_count=None, created_at=None)
+    return MasterRateMeta(**meta)

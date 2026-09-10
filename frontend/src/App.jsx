@@ -174,6 +174,62 @@ function SalesView() {
 
 const STATUS_LABEL = { open: "Open", in_progress: "In progress", resolved: "Resolved" };
 
+function MasterRatesPanel() {
+  const [meta, setMeta] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+
+  const loadMeta = () => fetch("/api/master-rates/meta").then((r) => r.json()).then(setMeta);
+  useEffect(loadMeta, []);
+
+  const onUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    setOk(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/master-rates/upload", { method: "POST", body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Upload failed");
+      }
+      const data = await res.json();
+      setOk(`Loaded ${data.row_count} lanes.`);
+      loadMeta();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+      <h2 className="font-semibold mb-2">Master vendor rates</h2>
+      <p className="text-sm text-gray-500 mb-3">
+        Upload a CSV export of the "Database Rate" tab (File → Download → CSV in Google Sheets)
+        whenever the master sheet changes. This replaces the previous data entirely.
+      </p>
+      <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
+      {uploading && <p className="text-sm text-gray-500 mt-2">Processing…</p>}
+      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+      {ok && <p className="text-sm text-green-600 mt-2">{ok}</p>}
+      {meta?.created_at && (
+        <p className="text-xs text-gray-400 mt-3">
+          Last loaded {meta.created_at} by {meta.uploaded_by} — {meta.row_count} lanes
+          {meta.filename ? ` (${meta.filename})` : ""}.
+        </p>
+      )}
+      {!meta?.created_at && <p className="text-xs text-gray-400 mt-3">No master rates loaded yet.</p>}
+    </div>
+  );
+}
+
 function VmView() {
   const [tab, setTab] = useState("summary");
   const [summary, setSummary] = useState(null);
@@ -199,6 +255,8 @@ function VmView() {
 
   return (
     <div>
+      <MasterRatesPanel />
+
       <div className="flex gap-2 mb-4">
         {["summary", "requests"].map((t) => (
           <button

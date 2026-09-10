@@ -170,6 +170,48 @@
         }
       }
     },
+    "/api/master-rates/upload": {
+      "post": {
+        "summary": "VM: upload a CSV export of the master 'Database Rate' sheet tab, replacing all stored vendor cost data.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": { "file": { "type": "string", "format": "binary" } },
+                "required": ["file"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MasterRateUploadResult" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/master-rates/meta": {
+      "get": {
+        "summary": "VM: metadata about the most recent master vendor-rate upload.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MasterRateMeta" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/vm/summary": {
       "get": {
         "summary": "VM: prioritization summary — open requests bucketed into 'seeking a lower rate' vs 'lane has no rate at all', ranked by request count.",
@@ -297,6 +339,19 @@
           "destination": { "type": "string" },
           "vehicle_type": { "type": "string" },
           "request_count": { "type": "integer" }
+        }
+      },
+      "MasterRateUploadResult": {
+        "type": "object",
+        "properties": { "row_count": { "type": "integer" } }
+      },
+      "MasterRateMeta": {
+        "type": "object",
+        "properties": {
+          "uploaded_by": { "type": "string", "nullable": true },
+          "filename": { "type": "string", "nullable": true },
+          "row_count": { "type": "integer", "nullable": true },
+          "created_at": { "type": "string", "nullable": true }
         }
       },
       "VmSummary": {
