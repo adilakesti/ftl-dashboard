@@ -1,0 +1,33 @@
+# Local development ONLY — ignored by the platform on upload.
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: app
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - dbdata:/var/lib/mysql
+
+  migrate:
+    image: flyway/flyway:10
+    command: >
+      -url=jdbc:mysql://db:3306/app?allowPublicKeyRetrieval=true
+      -user=root -password=root
+      -connectRetries=30
+      -locations=filesystem:/flyway/sql
+      migrate
+    volumes:
+      - ./backend/resources/db/migration:/flyway/sql:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dbdata:

@@ -1,0 +1,9 @@
+description: >
+  Internal FTL (full-truckload) pricing dashboard. Sales uploads a CSV of
+  origin/destination/vehicle-type rate requests and gets back a computed final
+  rate (looked up from a master vendor-cost Google Sheet, margined per policy)
+  plus remarks; unmatched or unsatisfactory rows can be escalated to Vendor
+  Management, who work a prioritized queue of open requests. For the sales and
+  vendor management teams.
+
+database: oceanbase
