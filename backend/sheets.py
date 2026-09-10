@@ -1,8 +1,12 @@
 """Read-only access to the master "FTL Rates" Google Sheet (tab "Database Rate").
 
-Header row is row 11 (1-indexed), data starts row 12. Columns (as lettered in the
-sheet, B is the first fetched column so index 0):
-  B origin | C destination | D jawo/exJawo | E vehicle type | F client expected rate
+The sheet is shared as "Anyone with the link can view", so this fetches it via
+Google's public CSV export endpoint — no service account or API key needed.
+
+Header row is sheet row 11 (1-indexed), data starts row 12. Columns as lettered
+in the sheet (A is the first CSV column, index 0):
+  A (unused) | B origin | C destination | D jawo/exJawo | E vehicle type
+  F client expected rate
   G duta SLA | H duta rate | I diff | J %diff
   K seryu SLA | L seryu rate | M diff | N %diff
   O ab-cargo SLA | P ab-cargo rate | Q diff | R %diff
@@ -11,35 +15,32 @@ sheet, B is the first fetched column so index 0):
 Only the four vendor "oneway rate" columns (H, L, P, T) are used — the sheet's own
 Diff/%Diff columns are ignored; this app computes its own margin logic.
 """
+import csv
+import io
 import os
 import time
+import urllib.request
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-
-SHEET_TAB = "Database Rate"
-DATA_RANGE = f"'{SHEET_TAB}'!B12:T5000"
+SHEET_TAB_GID = os.getenv("GOOGLE_SHEET_GID", "0")
+DATA_START_ROW_INDEX = 11  # 0-indexed; sheet row 12
 CACHE_TTL_SECONDS = 300
 
-VENDOR_COL_OFFSETS = {
-    "Duta Trans": 6,   # H
-    "Seryu": 10,       # L
-    "AB Cargo": 14,    # P
-    "SJL": 18,         # T
+
+def _col(letter: str) -> int:
+    return ord(letter) - ord("A")
+
+
+VENDOR_COLS = {
+    "Duta Trans": _col("H"),
+    "Seryu": _col("L"),
+    "AB Cargo": _col("P"),
+    "SJL": _col("T"),
 }
+ORIGIN_COL = _col("B")
+DEST_COL = _col("C")
+VEHICLE_COL = _col("E")
 
 _cache: dict = {"data": None, "fetched_at": 0.0}
-
-
-def _service():
-    raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    import json
-
-    info = json.loads(raw)
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    )
-    return build("sheets", "v4", credentials=creds)
 
 
 def _parse_number(cell) -> float | None:
@@ -60,29 +61,28 @@ def _norm(s: str) -> str:
 
 def _fetch_raw() -> list[dict]:
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    svc = _service()
-    resp = (
-        svc.spreadsheets()
-        .values()
-        .get(spreadsheetId=sheet_id, range=DATA_RANGE)
-        .execute()
-    )
-    rows = resp.get("values", [])
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={SHEET_TAB_GID}"
+    req = urllib.request.Request(url, headers={"User-Agent": "ftl-dashboard/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        text = resp.read().decode("utf-8-sig")
+
+    all_rows = list(csv.reader(io.StringIO(text)))
+    data_rows = all_rows[DATA_START_ROW_INDEX:]
 
     lanes = []
-    for row in rows:
-        if len(row) <= 4:
+    for row in data_rows:
+        max_col = max(VEHICLE_COL, *VENDOR_COLS.values())
+        if len(row) <= max_col:
             continue
-        origin = row[0].strip() if len(row) > 0 and row[0] else None
-        dest = row[1].strip() if len(row) > 1 and row[1] else None
-        vehicle = row[3].strip() if len(row) > 3 and row[3] else None
+        origin = row[ORIGIN_COL].strip() if row[ORIGIN_COL] else None
+        dest = row[DEST_COL].strip() if row[DEST_COL] else None
+        vehicle = row[VEHICLE_COL].strip() if row[VEHICLE_COL] else None
         if not origin or not dest or not vehicle:
             continue
 
         costs = {}
-        for vendor, offset in VENDOR_COL_OFFSETS.items():
-            cell = row[offset] if len(row) > offset else None
-            val = _parse_number(cell)
+        for vendor, col in VENDOR_COLS.items():
+            val = _parse_number(row[col])
             if val is not None and val > 0:
                 costs[vendor] = val
 

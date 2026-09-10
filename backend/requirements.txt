@@ -2,5 +2,3 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 asyncmy>=0.2.9
 python-multipart>=0.0.9
-google-auth>=2.34
-google-api-python-client>=2.140
