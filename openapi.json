@@ -1,0 +1,317 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "FTL Pricing Dashboard",
+    "version": "1.0.0",
+    "description": "Internal FTL (full-truckload) pricing dashboard: sales upload rate requests, get a computed final rate against a master vendor-cost Google Sheet, and can escalate lanes to Vendor Management, who work a prioritized request queue."
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Readiness probe.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "summary": "Return the signed-in user's email (from SSO) and their provisioned role (sales/vm), if any.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Me" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/upload": {
+      "post": {
+        "summary": "Sales: upload a CSV of OD + vehicle-type rate requests; computes and stores a final rate + remarks per row.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": { "file": { "type": "string", "format": "binary" } },
+                "required": ["file"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubmissionDetail" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions": {
+      "get": {
+        "summary": "Sales: list the current user's past submissions.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubmissionList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/submissions/{submission_id}": {
+      "get": {
+        "summary": "Sales: fetch one submission and its computed rows.",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubmissionDetail" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vm-requests": {
+      "post": {
+        "summary": "Sales: escalate a lane (an existing submission row, or ad hoc) to Vendor Management.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VmRequestIn" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VmRequest" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vm/requests": {
+      "get": {
+        "summary": "VM: list all vendor-management requests, open ones first.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VmRequestList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vm/requests/{request_id}": {
+      "patch": {
+        "summary": "VM: update a request's status, or record the vendor/cost it resolved at.",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VmRequestUpdate" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VmRequest" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vm/summary": {
+      "get": {
+        "summary": "VM: prioritization summary — open requests bucketed into 'seeking a lower rate' vs 'lane has no rate at all', ranked by request count.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VmSummary" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": { "status": { "type": "string" } }
+      },
+      "Me": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string", "nullable": true },
+          "role": { "type": "string", "nullable": true, "enum": ["sales", "vm", null] }
+        }
+      },
+      "SubmissionRow": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "target_rate": { "type": "number", "nullable": true },
+          "final_rate": { "type": "number", "nullable": true },
+          "remarks": { "type": "string" },
+          "matched_vendor": { "type": "string", "nullable": true }
+        }
+      },
+      "Submission": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "uploaded_by": { "type": "string" },
+          "filename": { "type": "string", "nullable": true },
+          "created_at": { "type": "string" }
+        }
+      },
+      "SubmissionList": {
+        "type": "object",
+        "properties": {
+          "submissions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Submission" }
+          }
+        }
+      },
+      "SubmissionDetail": {
+        "type": "object",
+        "properties": {
+          "submission": { "$ref": "#/components/schemas/Submission" },
+          "rows": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SubmissionRow" }
+          }
+        }
+      },
+      "VmRequestIn": {
+        "type": "object",
+        "required": ["origin", "destination", "vehicle_type"],
+        "properties": {
+          "submission_row_id": { "type": "integer", "nullable": true },
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "target_rate": { "type": "number", "nullable": true },
+          "current_final_rate": { "type": "number", "nullable": true }
+        }
+      },
+      "VmRequest": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "target_rate": { "type": "number", "nullable": true },
+          "target_cost": {
+            "type": "number",
+            "nullable": true,
+            "description": "target_rate / 1.111 — shown to VM instead of the raw shipper target."
+          },
+          "current_final_rate": { "type": "number", "nullable": true },
+          "requested_by": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "in_progress", "resolved"] },
+          "resolved_vendor": { "type": "string", "nullable": true },
+          "resolved_cost": { "type": "number", "nullable": true },
+          "created_at": { "type": "string" }
+        }
+      },
+      "VmRequestList": {
+        "type": "object",
+        "properties": {
+          "requests": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/VmRequest" }
+          }
+        }
+      },
+      "VmRequestUpdate": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["open", "in_progress", "resolved"], "nullable": true },
+          "resolved_vendor": { "type": "string", "nullable": true },
+          "resolved_cost": { "type": "number", "nullable": true }
+        }
+      },
+      "LaneSummary": {
+        "type": "object",
+        "properties": {
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "request_count": { "type": "integer" }
+        }
+      },
+      "VmSummary": {
+        "type": "object",
+        "properties": {
+          "seeking_lower_rate": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/LaneSummary" }
+          },
+          "missing_lanes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/LaneSummary" }
+          }
+        }
+      }
+    }
+  }
+}
