@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
 
+const RATE_REQUEST_TEMPLATE_CSV =
+  "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,7000000\n" +
+  "Kab. Bekasi,Kota Bandung,Wingbox,\n";
+
+const RATE_REQUEST_TEMPLATE_URL =
+  "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
+
 function fmt(n) {
   if (n === null || n === undefined) return "-";
   return new Intl.NumberFormat("id-ID").format(n);
@@ -94,7 +102,14 @@ function SalesView() {
       <div className="bg-white rounded-lg border border-gray-200 p-4">
         <h2 className="font-semibold mb-2">Upload rate request CSV</h2>
         <p className="text-sm text-gray-500 mb-3">
-          Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional)
+          Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
+          <a
+            href={RATE_REQUEST_TEMPLATE_URL}
+            download="ftl_rate_request_template.csv"
+            className="text-blue-600 hover:underline"
+          >
+            Download template
+          </a>
         </p>
         <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
         {uploading && <p className="text-sm text-gray-500 mt-2">Processing…</p>}
