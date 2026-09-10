@@ -238,7 +238,7 @@
         "type": "object",
         "properties": {
           "email": { "type": "string", "nullable": true },
-          "role": { "type": "string", "nullable": true, "enum": ["sales", "vm", null] }
+          "role": { "type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null] }
         }
       },
       "SubmissionRow": {

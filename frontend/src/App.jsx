@@ -371,6 +371,7 @@ function VmView() {
 
 export default function App() {
   const { me, loading } = useMe();
+  const [view, setView] = useState("sales");
 
   if (loading) return <div className="p-8 text-gray-400">Loading…</div>;
 
@@ -389,15 +390,35 @@ export default function App() {
     );
   }
 
+  const isSuperadmin = me.role === "superadmin";
+  const activeView = isSuperadmin ? view : me.role;
+
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-        <h1 className="font-semibold">FTL Pricing Dashboard</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="font-semibold">FTL Pricing Dashboard</h1>
+          {isSuperadmin && (
+            <div className="flex gap-1">
+              {["sales", "vm"].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-2.5 py-1 rounded text-xs font-medium uppercase ${
+                    activeView === v ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-500"
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div className="text-sm text-gray-500">
           {me.email} <span className="ml-2 px-2 py-0.5 rounded bg-gray-100 text-xs uppercase">{me.role}</span>
         </div>
       </header>
-      <main className="p-6 max-w-6xl mx-auto">{me.role === "sales" ? <SalesView /> : <VmView />}</main>
+      <main className="p-6 max-w-6xl mx-auto">{activeView === "sales" ? <SalesView /> : <VmView />}</main>
     </div>
   );
 }

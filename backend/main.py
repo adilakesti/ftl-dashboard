@@ -61,7 +61,7 @@ async def require_role(request: Request, role: str) -> str:
     email, actual_role = await current_user(request)
     if not email:
         raise HTTPException(401, "Not signed in")
-    if actual_role != role:
+    if actual_role != role and actual_role != "superadmin":
         raise HTTPException(403, f"Not provisioned as {role}")
     return email
 
