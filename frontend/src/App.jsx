@@ -584,6 +584,136 @@ function VmView() {
   );
 }
 
+function AdminPanel() {
+  const [users, setUsers] = useState([]);
+  const [newEmail, setNewEmail] = useState("");
+  const [newRole, setNewRole] = useState("sales");
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const loadUsers = () => fetch("/api/admin/users").then((r) => r.json()).then((d) => setUsers(d.users));
+  useEffect(loadUsers, []);
+
+  const addUser = async (e) => {
+    e.preventDefault();
+    if (!newEmail.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: newEmail.trim(), role: newRole }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Failed to add user");
+      }
+      setNewEmail("");
+      setNewRole("sales");
+      loadUsers();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeRole = async (email, role) => {
+    await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, role }),
+    });
+    loadUsers();
+  };
+
+  const removeUser = async (email) => {
+    await fetch(`/api/admin/users/${encodeURIComponent(email)}`, { method: "DELETE" });
+    loadUsers();
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <h2 className="font-semibold mb-3">Add user</h2>
+        <form onSubmit={addUser} className="flex gap-3 items-end">
+          <div className="flex-1">
+            <label className="text-xs text-gray-500">Email</label>
+            <input
+              type="email"
+              required
+              className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              placeholder="name@ninjavan.co"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500">Role</label>
+            <select
+              className="mt-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value)}
+            >
+              <option value="sales">Sales</option>
+              <option value="vm">VM</option>
+              <option value="superadmin">Superadmin</option>
+            </select>
+          </div>
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-4 py-1.5 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+          >
+            Add
+          </button>
+        </form>
+        {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+      </div>
+
+      <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr>
+              <Th>Email</Th>
+              <Th>Role</Th>
+              <Th></Th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.email}>
+                <Td>{u.email}</Td>
+                <Td>
+                  <select
+                    value={u.role}
+                    onChange={(e) => changeRole(u.email, e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                  >
+                    <option value="sales">Sales</option>
+                    <option value="vm">VM</option>
+                    <option value="superadmin">Superadmin</option>
+                  </select>
+                </Td>
+                <Td>
+                  <button
+                    onClick={() => removeUser(u.email)}
+                    className="text-xs text-red-600 hover:underline"
+                  >
+                    Remove
+                  </button>
+                </Td>
+              </tr>
+            ))}
+            {users.length === 0 && <tr><Td className="text-gray-400" colSpan={3}>No users yet</Td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { me, loading } = useMe();
   const [view, setView] = useState("sales");
@@ -615,7 +745,7 @@ export default function App() {
           <h1 className="font-semibold">FTL Pricing Dashboard</h1>
           {isSuperadmin && (
             <div className="flex gap-1">
-              {["sales", "vm"].map((v) => (
+              {["sales", "vm", "admin"].map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -633,7 +763,11 @@ export default function App() {
           {me.email} <span className="ml-2 px-2 py-0.5 rounded bg-gray-100 text-xs uppercase">{me.role}</span>
         </div>
       </header>
-      <main className="p-6 max-w-6xl mx-auto">{activeView === "sales" ? <SalesView /> : <VmView />}</main>
+      <main className="p-6 max-w-6xl mx-auto">
+        {activeView === "sales" && <SalesView />}
+        {activeView === "vm" && <VmView />}
+        {activeView === "admin" && <AdminPanel />}
+      </main>
     </div>
   );
 }

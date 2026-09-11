@@ -67,10 +67,70 @@ async def require_role(request: Request, role: str) -> str:
     return email
 
 
+async def require_superadmin(request: Request) -> str:
+    email, actual_role = await current_user(request)
+    if not email:
+        raise HTTPException(401, "Not signed in")
+    if actual_role != "superadmin":
+        raise HTTPException(403, "Not provisioned as superadmin")
+    return email
+
+
 @app.get("/api/me", response_model=Me)
 async def me(request: Request):
     email, role = await current_user(request)
     return {"email": email, "role": role}
+
+
+# ---------------------------------------------------------------------------
+# Superadmin: manage who has access and their role
+# ---------------------------------------------------------------------------
+
+
+class UserRole(BaseModel):
+    email: str
+    role: str
+
+
+class UserRoleList(BaseModel):
+    users: list[UserRole]
+
+
+class UserRoleIn(BaseModel):
+    email: str
+    role: str
+
+
+@app.get("/api/admin/users", response_model=UserRoleList)
+async def list_users(request: Request):
+    await require_superadmin(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT email, role FROM user_roles ORDER BY email")
+        rows = await cur.fetchall()
+    return UserRoleList(users=[UserRole(email=r[0], role=r[1]) for r in rows])
+
+
+@app.post("/api/admin/users", response_model=UserRole, status_code=201)
+async def upsert_user(body: UserRoleIn, request: Request):
+    await require_superadmin(request)
+    if body.role not in ("sales", "vm", "superadmin"):
+        raise HTTPException(400, "role must be one of: sales, vm, superadmin")
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(400, "email is required")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO user_roles (email, role) VALUES (%s, %s) ON DUPLICATE KEY UPDATE role = %s",
+            (email, body.role, body.role),
+        )
+    return UserRole(email=email, role=body.role)
+
+
+@app.delete("/api/admin/users/{email}", status_code=204)
+async def delete_user(email: str, request: Request):
+    await require_superadmin(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("DELETE FROM user_roles WHERE email = %s", (email,))
 
 
 # ---------------------------------------------------------------------------

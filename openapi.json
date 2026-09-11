@@ -36,6 +36,56 @@
         }
       }
     },
+    "/api/admin/users": {
+      "get": {
+        "summary": "Superadmin: list all users and their provisioned role.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserRoleList" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Superadmin: add a user or change an existing user's role (sales/vm/superadmin).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UserRoleIn" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserRole" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{email}": {
+      "delete": {
+        "summary": "Superadmin: revoke a user's access entirely.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "204": { "description": "No Content" } }
+      }
+    },
     "/api/submissions/upload": {
       "post": {
         "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests; computes and stores a final rate + remarks per row.",
@@ -264,6 +314,27 @@
           "final_rate": { "type": "number", "nullable": true },
           "remarks": { "type": "string" },
           "matched_vendor": { "type": "string", "nullable": true }
+        }
+      },
+      "UserRole": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] }
+        }
+      },
+      "UserRoleIn": {
+        "type": "object",
+        "required": ["email", "role"],
+        "properties": {
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] }
+        }
+      },
+      "UserRoleList": {
+        "type": "object",
+        "properties": {
+          "users": { "type": "array", "items": { "$ref": "#/components/schemas/UserRole" } }
         }
       },
       "AddOn": {
