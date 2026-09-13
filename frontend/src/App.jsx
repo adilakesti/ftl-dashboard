@@ -4,9 +4,20 @@ const RATE_REQUEST_TEMPLATE_CSV =
   "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate\n" +
   "Kab. Bekasi,Kota Surabaya,CDE,7000000\n" +
   "Kab. Bekasi,Kota Bandung,Wingbox,\n";
+const RATE_REQUEST_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
 
-const RATE_REQUEST_TEMPLATE_URL =
-  "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
+const MASTER_RATE_TEMPLATE_CSV =
+  "Origin L2,Destinasi L2,Vehicle Type,Cost/Rate,Vendor Name\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,6500000,Duta Trans\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,6800000,Seryu\n";
+const MASTER_RATE_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(MASTER_RATE_TEMPLATE_CSV);
+
+const STATUS_LABEL = {
+  open: "Open",
+  in_progress: "In Progress",
+  resolved: "Resolved",
+  closed_no_vendor: "No Vendor Available",
+};
 
 function fmt(n) {
   if (n === null || n === undefined) return "-";
@@ -26,11 +37,15 @@ function useMe() {
 }
 
 function Th({ children }) {
-  return <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 uppercase">{children}</th>;
+  return <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{children}</th>;
 }
 function Td({ children, className = "" }) {
   return <td className={`px-3 py-2 text-sm border-t border-gray-100 ${className}`}>{children}</td>;
 }
+
+// ---------------------------------------------------------------------------
+// Sales
+// ---------------------------------------------------------------------------
 
 const DEFAULT_SHIPPER_FORM = {
   shipper_name: "",
@@ -67,9 +82,53 @@ function WizardSteps({ step }) {
   );
 }
 
+function TicketTable({ tickets, empty }) {
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr>
+            <Th>Origin</Th>
+            <Th>Destination</Th>
+            <Th>Vehicle Type</Th>
+            <Th>Status</Th>
+            <Th>Aging (days)</Th>
+            <Th>Outcome</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {tickets.map((t) => (
+            <tr key={t.id}>
+              <Td>{t.origin}</Td>
+              <Td>{t.destination}</Td>
+              <Td>{t.vehicle_type}</Td>
+              <Td>{STATUS_LABEL[t.status] || t.status}</Td>
+              <Td>{t.aging_days}</Td>
+              <Td className={t.status === "closed_no_vendor" ? "text-red-500" : "font-medium"}>
+                {t.status === "resolved"
+                  ? `${t.resolved_vendor || ""} — ${fmt(t.current_final_rate)}`
+                  : t.status === "closed_no_vendor"
+                  ? "No vendor available"
+                  : "-"}
+              </Td>
+            </tr>
+          ))}
+          {tickets.length === 0 && (
+            <tr>
+              <Td className="text-gray-400" colSpan={6}>{empty}</Td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function SalesView() {
   const [submissions, setSubmissions] = useState([]);
   const [active, setActive] = useState(null); // {submission, rows}
+  const [tickets, setTickets] = useState([]);
+  const [resultTab, setResultTab] = useState("lanes");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   const [requested, setRequested] = useState({});
@@ -87,12 +146,20 @@ function SalesView() {
 
   useEffect(loadSubmissions, []);
 
+  const loadTickets = (submissionId) => {
+    fetch(`/api/submissions/${submissionId}/tickets`)
+      .then((r) => r.json())
+      .then((d) => setTickets(d.requests));
+  };
+
   const startNew = () => {
     setActive(null);
+    setTickets([]);
     setShipperForm(DEFAULT_SHIPPER_FORM);
     setAddOns(PREDEFINED_ADD_ONS.map((label) => ({ label, checked: false })));
     setCustomAddOn({ checked: false, label: "", value: "" });
     setError(null);
+    setResultTab("lanes");
     setStep("details");
   };
 
@@ -136,8 +203,10 @@ function SalesView() {
       const data = await res.json();
       setActive(data);
       setRequested({});
+      setResultTab("lanes");
       setStep("result");
       loadSubmissions();
+      loadTickets(data.submission.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -152,7 +221,9 @@ function SalesView() {
       .then((d) => {
         setActive(d);
         setRequested({});
+        setResultTab("lanes");
         setStep("result");
+        loadTickets(id);
       });
   };
 
@@ -170,7 +241,11 @@ function SalesView() {
       }),
     });
     setRequested((r) => ({ ...r, [row.id]: true }));
+    loadTickets(active.submission.id);
   };
+
+  const activeTickets = tickets.filter((t) => t.status === "open" || t.status === "in_progress");
+  const completedTickets = tickets.filter((t) => t.status === "resolved" || t.status === "closed_no_vendor");
 
   return (
     <div className="flex gap-6">
@@ -337,47 +412,85 @@ function SalesView() {
           </div>
         )}
 
-        {step === "result" && (active ? (
-            <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <Th>L2 Origin</Th>
-                    <Th>L2 Destinasi</Th>
-                    <Th>Vehicle Type</Th>
-                    <Th>Target Rate</Th>
-                    <Th>Final Rate</Th>
-                    <Th>Remarks</Th>
-                    <Th></Th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {active.rows.map((row) => (
-                    <tr key={row.id}>
-                      <Td>{row.origin}</Td>
-                      <Td>{row.destination}</Td>
-                      <Td>{row.vehicle_type}</Td>
-                      <Td>{fmt(row.target_rate)}</Td>
-                      <Td className={row.final_rate == null ? "text-gray-400" : "font-medium"}>
-                        {fmt(row.final_rate)}
-                      </Td>
-                      <Td className="text-gray-500">{row.remarks}</Td>
-                      <Td>
-                        {requested[row.id] ? (
-                          <span className="text-xs text-green-600">Requested</span>
-                        ) : (
-                          <button
-                            onClick={() => requestVm(row)}
-                            className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
-                          >
-                            Request to VM
-                          </button>
-                        )}
-                      </Td>
-                    </tr>
+        {step === "result" &&
+          (active ? (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex gap-2">
+                  {[
+                    { key: "lanes", label: "All Lanes" },
+                    { key: "active", label: `Active Requests (${activeTickets.length})` },
+                    { key: "completed", label: `Completed Requests (${completedTickets.length})` },
+                  ].map((t) => (
+                    <button
+                      key={t.key}
+                      onClick={() => setResultTab(t.key)}
+                      className={`px-3 py-1.5 rounded text-sm font-medium ${
+                        resultTab === t.key ? "bg-gray-900 text-white" : "bg-white border border-gray-200 text-gray-600"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
                   ))}
-                </tbody>
-              </table>
+                </div>
+                <a
+                  href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
+                  className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50"
+                >
+                  Download quotation (Excel)
+                </a>
+              </div>
+
+              {resultTab === "lanes" && (
+                <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr>
+                        <Th>Origin</Th>
+                        <Th>Destination</Th>
+                        <Th>Vehicle Type</Th>
+                        <Th>Target Rate</Th>
+                        <Th>Final Rate</Th>
+                        <Th>Remarks</Th>
+                        <Th></Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {active.rows.map((row) => (
+                        <tr key={row.id}>
+                          <Td>{row.origin}</Td>
+                          <Td>{row.destination}</Td>
+                          <Td>{row.vehicle_type}</Td>
+                          <Td>{fmt(row.target_rate)}</Td>
+                          <Td className={row.final_rate == null ? "text-gray-400" : "font-medium"}>
+                            {fmt(row.final_rate)}
+                          </Td>
+                          <Td className="text-gray-500">{row.remarks}</Td>
+                          <Td>
+                            {requested[row.id] ? (
+                              <span className="text-xs text-green-600">Requested</span>
+                            ) : (
+                              <button
+                                onClick={() => requestVm(row)}
+                                className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                              >
+                                Request to VM
+                              </button>
+                            )}
+                          </Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {resultTab === "active" && (
+                <TicketTable tickets={activeTickets} empty="No active VM requests for this submission." />
+              )}
+              {resultTab === "completed" && (
+                <TicketTable tickets={completedTickets} empty="No completed VM requests yet." />
+              )}
             </div>
           ) : (
             <div className="text-sm text-gray-400 mt-8">Upload a CSV, or pick a past submission, to see results.</div>
@@ -387,16 +500,28 @@ function SalesView() {
   );
 }
 
-const STATUS_LABEL = { open: "Open", in_progress: "In progress", resolved: "Resolved" };
+// ---------------------------------------------------------------------------
+// VM: master rates panel
+// ---------------------------------------------------------------------------
 
 function MasterRatesPanel() {
   const [meta, setMeta] = useState(null);
+  const [rates, setRates] = useState([]);
+  const [showExisting, setShowExisting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   const [ok, setOk] = useState(null);
 
   const loadMeta = () => fetch("/api/master-rates/meta").then((r) => r.json()).then(setMeta);
-  useEffect(loadMeta, []);
+  const loadRates = () => fetch("/api/master-rates").then((r) => r.json()).then((d) => setRates(d.rates));
+
+  useEffect(() => {
+    loadMeta();
+  }, []);
+
+  useEffect(() => {
+    if (showExisting) loadRates();
+  }, [showExisting]);
 
   const onUpload = async (e) => {
     const file = e.target.files[0];
@@ -413,8 +538,9 @@ function MasterRatesPanel() {
         throw new Error(body.detail || "Upload failed");
       }
       const data = await res.json();
-      setOk(`Loaded ${data.row_count} lanes.`);
+      setOk(`Saved ${data.row_count} vendor rate row(s).`);
       loadMeta();
+      if (showExisting) loadRates();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -427,28 +553,353 @@ function MasterRatesPanel() {
     <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
       <h2 className="font-semibold mb-2">Master vendor rates</h2>
       <p className="text-sm text-gray-500 mb-3">
-        Upload a CSV export of the "Database Rate" tab (File → Download → CSV in Google Sheets)
-        whenever the master sheet changes. This replaces the previous data entirely.
+        Columns: Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name.{" "}
+        <a href={MASTER_RATE_TEMPLATE_URL} download="master_vendor_rate_template.csv" className="text-blue-600 hover:underline">
+          Download template
+        </a>
+        . Uploads add/update rows — existing lanes not in the file are kept.
       </p>
       <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
       {uploading && <p className="text-sm text-gray-500 mt-2">Processing…</p>}
       {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
       {ok && <p className="text-sm text-green-600 mt-2">{ok}</p>}
-      {meta?.created_at && (
+      {meta?.created_at ? (
         <p className="text-xs text-gray-400 mt-3">
-          Last loaded {meta.created_at} by {meta.uploaded_by} — {meta.row_count} lanes
+          Last upload {meta.created_at} by {meta.uploaded_by} — {meta.row_count} row(s)
           {meta.filename ? ` (${meta.filename})` : ""}.
         </p>
+      ) : (
+        <p className="text-xs text-gray-400 mt-3">No master rates loaded yet.</p>
       )}
-      {!meta?.created_at && <p className="text-xs text-gray-400 mt-3">No master rates loaded yet.</p>}
+
+      <div className="mt-4 pt-4 border-t border-gray-100">
+        <div className="flex items-center justify-between">
+          <button onClick={() => setShowExisting((v) => !v)} className="text-sm text-blue-600 hover:underline">
+            {showExisting ? "Hide" : "View"} existing vendor rates
+          </button>
+          {showExisting && (
+            <a href="/api/master-rates/export" className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50">
+              Download CSV
+            </a>
+          )}
+        </div>
+        {showExisting && (
+          <div className="mt-3 max-h-96 overflow-y-auto border border-gray-100 rounded">
+            <table className="w-full">
+              <thead className="sticky top-0 bg-white">
+                <tr>
+                  <Th>Origin</Th>
+                  <Th>Destination</Th>
+                  <Th>Vehicle Type</Th>
+                  <Th>Vendor</Th>
+                  <Th>Cost</Th>
+                  <Th>Updated</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {rates.map((r, i) => (
+                  <tr key={i}>
+                    <Td>{r.origin}</Td>
+                    <Td>{r.destination}</Td>
+                    <Td>{r.vehicle_type}</Td>
+                    <Td>{r.vendor_name}</Td>
+                    <Td>{fmt(r.cost)}</Td>
+                    <Td className="text-gray-400 text-xs">{r.updated_by}</Td>
+                  </tr>
+                ))}
+                {rates.length === 0 && (
+                  <tr>
+                    <Td className="text-gray-400" colSpan={6}>No vendor rates yet</Td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// VM: prioritization (with view-more + per-column filters)
+// ---------------------------------------------------------------------------
+
+function LaneFilterTable({ lanes, onClose }) {
+  const [filters, setFilters] = useState({ origin: "", destination: "", vehicle_type: "" });
+  const filtered = lanes.filter(
+    (l) =>
+      l.origin.toLowerCase().includes(filters.origin.toLowerCase()) &&
+      l.destination.toLowerCase().includes(filters.destination.toLowerCase()) &&
+      l.vehicle_type.toLowerCase().includes(filters.vehicle_type.toLowerCase())
+  );
+  return (
+    <div className="mt-3 border border-gray-200 rounded">
+      <div className="flex justify-end p-2 border-b border-gray-100">
+        <button onClick={onClose} className="text-xs text-gray-500 hover:underline">
+          Collapse
+        </button>
+      </div>
+      <div className="max-h-96 overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-white">
+            <tr>
+              <Th>Origin</Th>
+              <Th>Destination</Th>
+              <Th>Vehicle</Th>
+              <Th>Requests</Th>
+            </tr>
+            <tr>
+              <Td>
+                <input
+                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  placeholder="Filter…"
+                  value={filters.origin}
+                  onChange={(e) => setFilters((f) => ({ ...f, origin: e.target.value }))}
+                />
+              </Td>
+              <Td>
+                <input
+                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  placeholder="Filter…"
+                  value={filters.destination}
+                  onChange={(e) => setFilters((f) => ({ ...f, destination: e.target.value }))}
+                />
+              </Td>
+              <Td>
+                <input
+                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  placeholder="Filter…"
+                  value={filters.vehicle_type}
+                  onChange={(e) => setFilters((f) => ({ ...f, vehicle_type: e.target.value }))}
+                />
+              </Td>
+              <Td></Td>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((l, i) => (
+              <tr key={i}>
+                <Td>{l.origin}</Td>
+                <Td>{l.destination}</Td>
+                <Td>{l.vehicle_type}</Td>
+                <Td>{l.request_count}</Td>
+              </tr>
+            ))}
+            {filtered.length === 0 && (
+              <tr>
+                <Td className="text-gray-400" colSpan={4}>No matches</Td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PrioritizationSection({ title, lanes }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fullLanes, setFullLanes] = useState(null);
+
+  const viewMore = async () => {
+    if (!fullLanes) {
+      const key = title === "Seeking a lower rate" ? "seeking_lower_rate" : "missing_lanes";
+      const d = await fetch("/api/vm/summary?limit=500").then((r) => r.json());
+      setFullLanes(d[key]);
+    }
+    setExpanded(true);
+  };
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <h3 className="font-semibold mb-3">{title}</h3>
+      {!expanded && (
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                <Th>Origin</Th>
+                <Th>Destination</Th>
+                <Th>Vehicle</Th>
+                <Th>Requests</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {lanes.slice(0, 10).map((l, i) => (
+                <tr key={i}>
+                  <Td>{l.origin}</Td>
+                  <Td>{l.destination}</Td>
+                  <Td>{l.vehicle_type}</Td>
+                  <Td>{l.request_count}</Td>
+                </tr>
+              ))}
+              {lanes.length === 0 && (
+                <tr>
+                  <Td className="text-gray-400" colSpan={4}>None</Td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          {lanes.length >= 10 && (
+            <button onClick={viewMore} className="mt-2 text-sm text-blue-600 hover:underline">
+              View more
+            </button>
+          )}
+        </>
+      )}
+      {expanded && fullLanes && <LaneFilterTable lanes={fullLanes} onClose={() => setExpanded(false)} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VM: per-request resolve panel
+// ---------------------------------------------------------------------------
+
+function ResolveRequestPanel({ request, onDone, onCancel }) {
+  const [vendorRows, setVendorRows] = useState([{ vendor_name: "", cost: "" }]);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const updateRow = (i, field, value) => {
+    setVendorRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+  };
+  const addRow = () => setVendorRows((rows) => [...rows, { vendor_name: "", cost: "" }]);
+  const removeRow = (i) => setVendorRows((rows) => rows.filter((_, j) => j !== i));
+
+  const submitManual = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const vendor_costs = vendorRows
+        .filter((r) => r.vendor_name.trim() && Number(r.cost) > 0)
+        .map((r) => ({ vendor_name: r.vendor_name.trim(), cost: Number(r.cost) }));
+      if (vendor_costs.length === 0) {
+        setError("Enter at least one vendor name and cost");
+        setBusy(false);
+        return;
+      }
+      const res = await fetch(`/api/vm/requests/${request.id}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vendor_costs }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Failed to resolve");
+      }
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitCsv = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`/api/vm/requests/${request.id}/resolve-upload`, { method: "POST", body: form });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Failed to resolve from CSV");
+      }
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+      e.target.value = "";
+    }
+  };
+
+  const closeNoVendor = async () => {
+    if (!confirm("Close this ticket as 'no vendor available'? This cannot supply a rate for this OD.")) return;
+    setBusy(true);
+    try {
+      await fetch(`/api/vm/requests/${request.id}/close-no-vendor`, { method: "POST" });
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="bg-white border border-gray-300 rounded-lg p-4 mt-3">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold">
+          {request.origin} → {request.destination} · {request.vehicle_type}
+        </h3>
+        <button onClick={onCancel} className="text-xs text-gray-500 hover:underline">Close</button>
+      </div>
+      {request.target_cost != null && (
+        <p className="text-sm text-gray-500 mb-3">Target cost to beat: <span className="font-medium">{fmt(request.target_cost)}</span></p>
+      )}
+
+      <div className="space-y-2 mb-3">
+        <p className="text-xs text-gray-500 uppercase font-semibold">Enter vendor cost(s)</p>
+        {vendorRows.map((r, i) => (
+          <div key={i} className="flex gap-2">
+            <input
+              placeholder="Vendor name"
+              className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+              value={r.vendor_name}
+              onChange={(e) => updateRow(i, "vendor_name", e.target.value)}
+            />
+            <input
+              placeholder="Cost"
+              type="number"
+              className="w-40 border border-gray-300 rounded px-2 py-1 text-sm"
+              value={r.cost}
+              onChange={(e) => updateRow(i, "cost", e.target.value)}
+            />
+            {vendorRows.length > 1 && (
+              <button onClick={() => removeRow(i)} className="text-xs text-red-500">✕</button>
+            )}
+          </div>
+        ))}
+        <button onClick={addRow} className="text-xs text-blue-600 hover:underline">+ Add vendor</button>
+      </div>
+
+      {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={submitManual}
+          disabled={busy}
+          className="px-3 py-1.5 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+        >
+          Save & Resolve
+        </button>
+        <span className="text-xs text-gray-400">or</span>
+        <label className="text-sm text-blue-600 hover:underline cursor-pointer">
+          Upload CSV for this lane
+          <input type="file" accept=".csv" className="hidden" onChange={submitCsv} disabled={busy} />
+        </label>
+        <span className="flex-1" />
+        <button onClick={closeNoVendor} disabled={busy} className="text-sm text-red-600 hover:underline">
+          Close — no vendor available
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// VM: view
+// ---------------------------------------------------------------------------
 
 function VmView() {
   const [tab, setTab] = useState("summary");
   const [summary, setSummary] = useState(null);
   const [requests, setRequests] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
 
   const loadSummary = () => fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
   const loadRequests = () => fetch("/api/vm/requests").then((r) => r.json()).then((d) => setRequests(d.requests));
@@ -458,15 +909,23 @@ function VmView() {
     loadRequests();
   }, []);
 
-  const updateRequest = async (id, patch) => {
+  const updateStatus = async (id, status) => {
     await fetch(`/api/vm/requests/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ status }),
     });
     loadRequests();
     loadSummary();
   };
+
+  const onResolveDone = () => {
+    setSelectedId(null);
+    loadRequests();
+    loadSummary();
+  };
+
+  const selected = requests.find((r) => r.id === selectedId);
 
   return (
     <div>
@@ -481,108 +940,91 @@ function VmView() {
               tab === t ? "bg-gray-900 text-white" : "bg-white border border-gray-200 text-gray-600"
             }`}
           >
-            {t === "summary" ? "Prioritization" : "Requests"}
+            {t === "summary" ? "Prioritization" : "By Sales Request"}
           </button>
         ))}
       </div>
 
       {tab === "summary" && summary && (
         <div className="grid grid-cols-2 gap-6">
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 className="font-semibold mb-3">Seeking a lower rate</h3>
-            <table className="w-full text-sm">
-              <thead>
-                <tr>
-                  <Th>Lane</Th>
-                  <Th>Vehicle</Th>
-                  <Th>Requests</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.seeking_lower_rate.map((l, i) => (
-                  <tr key={i}>
-                    <Td>{l.origin} → {l.destination}</Td>
-                    <Td>{l.vehicle_type}</Td>
-                    <Td>{l.request_count}</Td>
-                  </tr>
-                ))}
-                {summary.seeking_lower_rate.length === 0 && (
-                  <tr><Td className="text-gray-400" colSpan={3}>None</Td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <h3 className="font-semibold mb-3">Missing lanes (no rate at all)</h3>
-            <table className="w-full text-sm">
-              <thead>
-                <tr>
-                  <Th>Lane</Th>
-                  <Th>Vehicle</Th>
-                  <Th>Requests</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.missing_lanes.map((l, i) => (
-                  <tr key={i}>
-                    <Td>{l.origin} → {l.destination}</Td>
-                    <Td>{l.vehicle_type}</Td>
-                    <Td>{l.request_count}</Td>
-                  </tr>
-                ))}
-                {summary.missing_lanes.length === 0 && (
-                  <tr><Td className="text-gray-400" colSpan={3}>None</Td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} />
+          <PrioritizationSection title="Missing lanes (no rate at all)" lanes={summary.missing_lanes} />
         </div>
       )}
 
       {tab === "requests" && (
-        <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr>
-                <Th>Lane</Th>
-                <Th>Vehicle</Th>
-                <Th>Requested by</Th>
-                <Th>Target Cost</Th>
-                <Th>Current Final Rate</Th>
-                <Th>Status</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {requests.map((r) => (
-                <tr key={r.id}>
-                  <Td>{r.origin} → {r.destination}</Td>
-                  <Td>{r.vehicle_type}</Td>
-                  <Td className="text-gray-500">{r.requested_by}</Td>
-                  <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
-                  <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
-                  <Td>
-                    <select
-                      value={r.status}
-                      onChange={(e) => updateRequest(r.id, { status: e.target.value })}
-                      className="text-xs border border-gray-300 rounded px-1 py-0.5"
-                    >
-                      {Object.entries(STATUS_LABEL).map(([v, l]) => (
-                        <option key={v} value={v}>{l}</option>
-                      ))}
-                    </select>
-                  </Td>
+        <div>
+          <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <Th>Origin</Th>
+                  <Th>Destination</Th>
+                  <Th>Vehicle</Th>
+                  <Th>Requested by</Th>
+                  <Th>Target Cost</Th>
+                  <Th>Current Final Rate</Th>
+                  <Th>Aging (days)</Th>
+                  <Th>Status</Th>
+                  <Th></Th>
                 </tr>
-              ))}
-              {requests.length === 0 && (
-                <tr><Td className="text-gray-400" colSpan={6}>No requests yet</Td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {requests.map((r) => (
+                  <tr key={r.id} className={selectedId === r.id ? "bg-gray-50" : ""}>
+                    <Td>{r.origin}</Td>
+                    <Td>{r.destination}</Td>
+                    <Td>{r.vehicle_type}</Td>
+                    <Td className="text-gray-500">{r.requested_by}</Td>
+                    <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
+                    <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
+                    <Td>{r.aging_days}</Td>
+                    <Td>
+                      <select
+                        value={r.status}
+                        onChange={(e) => updateStatus(r.id, e.target.value)}
+                        className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                      >
+                        {Object.entries(STATUS_LABEL).map(([v, l]) => (
+                          <option key={v} value={v}>{l}</option>
+                        ))}
+                      </select>
+                    </Td>
+                    <Td>
+                      {r.status === "open" || r.status === "in_progress" ? (
+                        <button
+                          onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                        >
+                          {selectedId === r.id ? "Cancel" : "Fill rate"}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </Td>
+                  </tr>
+                ))}
+                {requests.length === 0 && (
+                  <tr>
+                    <Td className="text-gray-400" colSpan={9}>No requests yet</Td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {selected && (
+            <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
+          )}
         </div>
       )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Superadmin
+// ---------------------------------------------------------------------------
 
 function AdminPanel() {
   const [users, setUsers] = useState([]);
@@ -697,22 +1139,27 @@ function AdminPanel() {
                   </select>
                 </Td>
                 <Td>
-                  <button
-                    onClick={() => removeUser(u.email)}
-                    className="text-xs text-red-600 hover:underline"
-                  >
+                  <button onClick={() => removeUser(u.email)} className="text-xs text-red-600 hover:underline">
                     Remove
                   </button>
                 </Td>
               </tr>
             ))}
-            {users.length === 0 && <tr><Td className="text-gray-400" colSpan={3}>No users yet</Td></tr>}
+            {users.length === 0 && (
+              <tr>
+                <Td className="text-gray-400" colSpan={3}>No users yet</Td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// App shell
+// ---------------------------------------------------------------------------
 
 export default function App() {
   const { me, loading } = useMe();
@@ -740,6 +1187,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <div className="bg-amber-500 text-white text-center text-xs font-semibold uppercase tracking-wide py-1.5">
+        FTL On-Call Only
+      </div>
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h1 className="font-semibold">FTL Pricing Dashboard</h1>

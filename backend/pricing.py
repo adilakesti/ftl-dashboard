@@ -1,11 +1,12 @@
 """Final-rate computation for a sales CSV row, given the vendor costs found for
-its OD + vehicle-type lane in the master sheet.
+its OD + vehicle-type lane in the master rate data.
 
-Rules (see project chat / CLAUDE.md for the source discussion):
+Rules:
   - Target rate given:
-      1. pick the vendor cost closest to the target rate
+      1. take the average of the cheapest and 2nd-cheapest vendor cost (just the
+         cheapest if only one vendor quotes the lane) — not the outright cheapest
       2. margin it at 11.1%; if that result <= target rate, use it (remarks: "Meets target")
-      3. otherwise, margin the SAME closest cost at 5%, remarks: "already bottom rate"
+      3. otherwise, margin the SAME cost at 5%, remarks: "Already bottom rate"
   - No target rate:
       pick the 2nd-cheapest vendor cost ("second winner"), margin at 11.1%
   - No costs found at all for the lane: final rate is null, remarks: "No rate available"
@@ -28,18 +29,22 @@ def compute_final_rate(costs: dict[str, float], target_rate: float | None) -> Pr
     if not costs:
         return PricingResult(final_rate=None, remarks="No rate available", matched_vendor=None, matched_cost=None)
 
+    ranked = sorted(costs.items(), key=lambda kv: kv[1])
+
     if target_rate is not None:
-        vendor, cost = min(costs.items(), key=lambda kv: abs(kv[1] - target_rate))
+        if len(ranked) >= 2:
+            (v1, c1), (v2, c2) = ranked[0], ranked[1]
+            cost = round((c1 + c2) / 2, 2)
+            vendor = f"{v1} & {v2} (avg)"
+        else:
+            vendor, cost = ranked[0]
+
         standard = round(cost * MARGIN_STANDARD, 2)
         if standard <= target_rate:
             return PricingResult(final_rate=standard, remarks="Meets target", matched_vendor=vendor, matched_cost=cost)
         bottom = round(cost * MARGIN_BOTTOM, 2)
         return PricingResult(final_rate=bottom, remarks="Already bottom rate", matched_vendor=vendor, matched_cost=cost)
 
-    ranked = sorted(costs.items(), key=lambda kv: kv[1])
-    if len(ranked) >= 2:
-        vendor, cost = ranked[1]
-    else:
-        vendor, cost = ranked[0]
+    vendor, cost = ranked[1] if len(ranked) >= 2 else ranked[0]
     final = round(cost * MARGIN_STANDARD, 2)
     return PricingResult(final_rate=final, remarks="", matched_vendor=vendor, matched_cost=cost)

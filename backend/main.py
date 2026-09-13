@@ -9,8 +9,11 @@ import csv
 import io
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
 from pydantic import BaseModel
 
 import db
@@ -430,6 +433,8 @@ class VmRequest(BaseModel):
     resolved_vendor: str | None
     resolved_cost: float | None
     created_at: str
+    aging_days: int
+    submission_row_id: int | None = None
 
 
 class VmRequestList(BaseModel):
@@ -448,8 +453,19 @@ class VmSummary(BaseModel):
     missing_lanes: list[LaneSummary]
 
 
+VM_REQUEST_COLUMNS = (
+    "id, origin, destination, vehicle_type, target_rate, current_final_rate, "
+    "requested_by, status, resolved_vendor, resolved_cost, created_at, submission_row_id"
+)
+
+
 def _to_vm_request(r) -> VmRequest:
     target_rate = float(r[4]) if r[4] is not None else None
+    created_at = r[10]
+    aging_days = 0
+    if created_at is not None:
+        now = datetime.now(created_at.tzinfo) if created_at.tzinfo else datetime.now()
+        aging_days = max(0, (now - created_at).days)
     return VmRequest(
         id=r[0],
         origin=r[1],
@@ -462,7 +478,9 @@ def _to_vm_request(r) -> VmRequest:
         status=r[7],
         resolved_vendor=r[8],
         resolved_cost=float(r[9]) if r[9] is not None else None,
-        created_at=str(r[10]),
+        created_at=str(created_at),
+        aging_days=aging_days,
+        submission_row_id=r[11],
     )
 
 
@@ -486,13 +504,7 @@ async def create_vm_request(body: VmRequestIn, request: Request):
             ),
         )
         req_id = cur.lastrowid
-        await cur.execute(
-            """SELECT id, origin, destination, vehicle_type, target_rate,
-                      current_final_rate, requested_by, status, resolved_vendor,
-                      resolved_cost, created_at
-               FROM vm_requests WHERE id = %s""",
-            (req_id,),
-        )
+        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (req_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
@@ -502,13 +514,14 @@ async def list_vm_requests(request: Request):
     await require_role(request, "vm")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT id, origin, destination, vehicle_type, target_rate,
-                      current_final_rate, requested_by, status, resolved_vendor,
-                      resolved_cost, created_at
-               FROM vm_requests ORDER BY (status = 'resolved'), created_at DESC"""
+            f"""SELECT {VM_REQUEST_COLUMNS} FROM vm_requests
+                ORDER BY (status IN ('resolved', 'closed_no_vendor')), created_at ASC"""
         )
         rows = await cur.fetchall()
     return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+
+
+VM_STATUSES = ("open", "in_progress", "resolved", "closed_no_vendor")
 
 
 class VmRequestUpdate(BaseModel):
@@ -520,7 +533,7 @@ class VmRequestUpdate(BaseModel):
 @app.patch("/api/vm/requests/{request_id}", response_model=VmRequest)
 async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Request):
     await require_role(request, "vm")
-    if body.status is not None and body.status not in ("open", "in_progress", "resolved"):
+    if body.status is not None and body.status not in VM_STATUSES:
         raise HTTPException(400, "Invalid status")
 
     async with db.pool().acquire() as conn, conn.cursor() as cur:
@@ -542,36 +555,150 @@ async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Req
             values.append(request_id)
             await cur.execute(f"UPDATE vm_requests SET {', '.join(fields)} WHERE id = %s", values)
 
+        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
+        row = await cur.fetchone()
+    return _to_vm_request(row)
+
+
+async def _fetch_vm_request_raw(cur, request_id: int):
+    await cur.execute(
+        "SELECT origin, destination, vehicle_type, target_rate, submission_row_id FROM vm_requests WHERE id = %s",
+        (request_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Request not found")
+    return {"origin": row[0], "destination": row[1], "vehicle_type": row[2], "target_rate": row[3], "submission_row_id": row[4]}
+
+
+async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float]], resolved_by: str) -> VmRequest:
+    pool = db.pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        req = await _fetch_vm_request_raw(cur, request_id)
+
+    if vendor_costs:
+        rows = [
+            {
+                "origin": req["origin"],
+                "destination": req["destination"],
+                "vehicle_type": req["vehicle_type"],
+                "vendor_name": vendor_name,
+                "cost": cost,
+            }
+            for vendor_name, cost in vendor_costs
+        ]
+        await master_rates.upsert_rows(pool, rows, resolved_by, None)
+
+    costs = await master_rates.find_costs(pool, req["origin"], req["destination"], req["vehicle_type"])
+    result = pricing.compute_final_rate(costs, req["target_rate"])
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT id, origin, destination, vehicle_type, target_rate,
-                      current_final_rate, requested_by, status, resolved_vendor,
-                      resolved_cost, created_at
-               FROM vm_requests WHERE id = %s""",
+            """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
+               current_final_rate = %s WHERE id = %s""",
+            (result.matched_vendor, result.matched_cost, result.final_rate, request_id),
+        )
+        if req["submission_row_id"]:
+            await cur.execute(
+                """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
+                   matched_cost = %s WHERE id = %s""",
+                (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, req["submission_row_id"]),
+            )
+        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
+        row = await cur.fetchone()
+    return _to_vm_request(row)
+
+
+class VendorCostIn(BaseModel):
+    vendor_name: str
+    cost: float
+
+
+class VmResolveIn(BaseModel):
+    vendor_costs: list[VendorCostIn]
+
+
+@app.post("/api/vm/requests/{request_id}/resolve", response_model=VmRequest)
+async def resolve_vm_request(request_id: int, body: VmResolveIn, request: Request):
+    email = await require_role(request, "vm")
+    if not body.vendor_costs:
+        raise HTTPException(400, "At least one vendor cost is required")
+    pairs = [(vc.vendor_name, vc.cost) for vc in body.vendor_costs if vc.vendor_name.strip() and vc.cost > 0]
+    if not pairs:
+        raise HTTPException(400, "At least one valid vendor cost is required")
+    return await _apply_resolution(request_id, pairs, email)
+
+
+@app.post("/api/vm/requests/{request_id}/resolve-upload", response_model=VmRequest)
+async def resolve_vm_request_upload(request_id: int, request: Request, file: UploadFile):
+    email = await require_role(request, "vm")
+    content = await file.read()
+    try:
+        parsed = master_rates.parse_csv(content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        req = await _fetch_vm_request_raw(cur, request_id)
+
+    matching = [
+        (r["vendor_name"], r["cost"])
+        for r in parsed
+        if master_rates.norm(r["origin"]) == master_rates.norm(req["origin"])
+        and master_rates.norm(r["destination"]) == master_rates.norm(req["destination"])
+        and master_rates.norm(r["vehicle_type"]) == master_rates.norm(req["vehicle_type"])
+    ]
+    if not matching:
+        raise HTTPException(
+            400,
+            f"CSV has no row matching this request's lane ({req['origin']} → {req['destination']}, {req['vehicle_type']})",
+        )
+    return await _apply_resolution(request_id, matching, email)
+
+
+@app.post("/api/vm/requests/{request_id}/close-no-vendor", response_model=VmRequest)
+async def close_vm_request_no_vendor(request_id: int, request: Request):
+    await require_role(request, "vm")
+    pool = db.pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        req = await _fetch_vm_request_raw(cur, request_id)
+        await cur.execute(
+            """UPDATE vm_requests SET status = 'closed_no_vendor', resolved_vendor = NULL,
+               resolved_cost = NULL, current_final_rate = NULL WHERE id = %s""",
             (request_id,),
         )
+        if req["submission_row_id"]:
+            await cur.execute(
+                """UPDATE submission_rows SET final_rate = NULL, remarks = %s, matched_vendor = NULL,
+                   matched_cost = NULL WHERE id = %s""",
+                ("No vendor available (VM)", req["submission_row_id"]),
+            )
+        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
 
 @app.get("/api/vm/summary", response_model=VmSummary)
-async def vm_summary(request: Request):
+async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
     await require_role(request, "vm")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             """SELECT origin, destination, vehicle_type, COUNT(*) c
                FROM vm_requests
-               WHERE status != 'resolved' AND current_final_rate IS NOT NULL
+               WHERE status IN ('open', 'in_progress') AND current_final_rate IS NOT NULL
                GROUP BY origin, destination, vehicle_type
-               ORDER BY c DESC LIMIT 20"""
+               ORDER BY c DESC LIMIT %s""",
+            (limit,),
         )
         seeking = await cur.fetchall()
 
         await cur.execute(
             """SELECT origin, destination, vehicle_type, COUNT(*) c
                FROM vm_requests
-               WHERE status != 'resolved' AND current_final_rate IS NULL
+               WHERE status IN ('open', 'in_progress') AND current_final_rate IS NULL
                GROUP BY origin, destination, vehicle_type
-               ORDER BY c DESC LIMIT 20"""
+               ORDER BY c DESC LIMIT %s""",
+            (limit,),
         )
         missing = await cur.fetchall()
 
@@ -583,7 +710,8 @@ async def vm_summary(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Master vendor-rate data (VM uploads a CSV export of the "Database Rate" tab)
+# Master vendor-rate data — VM uploads a CSV (Origin L2 | Destinasi L2 |
+# Vehicle Type | Cost/Rate | Vendor Name); rows are upserted, never wiped.
 # ---------------------------------------------------------------------------
 
 
@@ -598,14 +726,31 @@ class MasterRateMeta(BaseModel):
     created_at: str | None
 
 
+class VendorRate(BaseModel):
+    origin: str
+    destination: str
+    vehicle_type: str
+    vendor_name: str
+    cost: float
+    updated_by: str | None
+    updated_at: str
+
+
+class VendorRateList(BaseModel):
+    rates: list[VendorRate]
+
+
 @app.post("/api/master-rates/upload", response_model=MasterRateUploadResult, status_code=201)
 async def upload_master_rates(request: Request, file: UploadFile):
     email = await require_role(request, "vm")
     content = await file.read()
-    lanes = master_rates.parse_csv(content)
-    if not lanes:
-        raise HTTPException(400, "No usable lane rows found in CSV")
-    row_count = await master_rates.replace_all(db.pool(), lanes, email, file.filename)
+    try:
+        rows = master_rates.parse_csv(content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not rows:
+        raise HTTPException(400, "No usable rows found in CSV")
+    row_count = await master_rates.upsert_rows(db.pool(), rows, email, file.filename)
     return MasterRateUploadResult(row_count=row_count)
 
 
@@ -616,3 +761,96 @@ async def master_rates_meta(request: Request):
     if not meta:
         return MasterRateMeta(uploaded_by=None, filename=None, row_count=None, created_at=None)
     return MasterRateMeta(**meta)
+
+
+@app.get("/api/master-rates", response_model=VendorRateList)
+async def get_master_rates(request: Request):
+    await require_role(request, "vm")
+    rows = await master_rates.list_all(db.pool())
+    return VendorRateList(rates=[VendorRate(**r) for r in rows])
+
+
+@app.get("/api/master-rates/export")
+async def export_master_rates(request: Request):
+    await require_role(request, "vm")
+    rows = await master_rates.list_all(db.pool())
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Origin L2", "Destinasi L2", "Vehicle Type", "Cost/Rate", "Vendor Name"])
+    for r in rows:
+        writer.writerow([r["origin"], r["destination"], r["vehicle_type"], r["cost"], r["vendor_name"]])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=master_vendor_rates.csv"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sales: tickets (VM requests) for a submission, and the quotation download
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/submissions/{submission_id}/tickets", response_model=VmRequestList)
+async def submission_tickets(submission_id: int, request: Request):
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM submissions WHERE id = %s AND uploaded_by = %s", (submission_id, email))
+        if not await cur.fetchone():
+            raise HTTPException(404, "Submission not found")
+
+        await cur.execute(
+            f"""SELECT {", ".join("vr." + c.strip() for c in VM_REQUEST_COLUMNS.split(","))}
+                FROM vm_requests vr
+                JOIN submission_rows sr ON vr.submission_row_id = sr.id
+                WHERE sr.submission_id = %s
+                ORDER BY vr.created_at ASC""",
+            (submission_id,),
+        )
+        rows = await cur.fetchall()
+    return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+
+
+@app.get("/api/submissions/{submission_id}/quotation.xlsx")
+async def submission_quotation(submission_id: int, request: Request):
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
+            (submission_id, email),
+        )
+        srow = await cur.fetchone()
+        if not srow:
+            raise HTTPException(404, "Submission not found")
+
+        await cur.execute(
+            """SELECT origin, destination, vehicle_type, final_rate, remarks
+               FROM submission_rows WHERE submission_id = %s AND final_rate IS NOT NULL
+               ORDER BY id""",
+            (submission_id,),
+        )
+        rows = await cur.fetchall()
+
+    submission = _row_to_submission(srow)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Quotation"
+    ws.append(["FTL Rate Quotation"])
+    ws.append(["Shipper Name", submission.shipper_name or ""])
+    ws.append(["Sales PIC", submission.sales_pic or ""])
+    ws.append(["Date", submission.created_at])
+    ws.append([])
+    ws.append(["Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks"])
+    for r in rows:
+        ws.append([r[0], r[1], r[2], float(r[3]), r[4] or ""])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=quotation_submission_{submission_id}.xlsx"},
+    )
