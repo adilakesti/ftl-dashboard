@@ -625,7 +625,7 @@ function MasterRatesPanel() {
 // VM: prioritization (with view-more + per-column filters)
 // ---------------------------------------------------------------------------
 
-function LaneFilterTable({ lanes, onClose }) {
+function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
   const [filters, setFilters] = useState({ origin: "", destination: "", vehicle_type: "" });
   const filtered = lanes.filter(
     (l) =>
@@ -648,6 +648,7 @@ function LaneFilterTable({ lanes, onClose }) {
               <Th>Destination</Th>
               <Th>Vehicle</Th>
               <Th>Requests</Th>
+              {showAvgTarget && <Th>Avg Target Rate</Th>}
             </tr>
             <tr>
               <Td>
@@ -675,6 +676,7 @@ function LaneFilterTable({ lanes, onClose }) {
                 />
               </Td>
               <Td></Td>
+              {showAvgTarget && <Td></Td>}
             </tr>
           </thead>
           <tbody>
@@ -684,11 +686,12 @@ function LaneFilterTable({ lanes, onClose }) {
                 <Td>{l.destination}</Td>
                 <Td>{l.vehicle_type}</Td>
                 <Td>{l.request_count}</Td>
+                {showAvgTarget && <Td>{l.avg_target_rate != null ? fmt(l.avg_target_rate) : "-"}</Td>}
               </tr>
             ))}
             {filtered.length === 0 && (
               <tr>
-                <Td className="text-gray-400" colSpan={4}>No matches</Td>
+                <Td className="text-gray-400" colSpan={showAvgTarget ? 5 : 4}>No matches</Td>
               </tr>
             )}
           </tbody>
@@ -698,7 +701,7 @@ function LaneFilterTable({ lanes, onClose }) {
   );
 }
 
-function PrioritizationSection({ title, lanes }) {
+function PrioritizationSection({ title, lanes, showAvgTarget }) {
   const [expanded, setExpanded] = useState(false);
   const [fullLanes, setFullLanes] = useState(null);
 
@@ -723,6 +726,7 @@ function PrioritizationSection({ title, lanes }) {
                 <Th>Destination</Th>
                 <Th>Vehicle</Th>
                 <Th>Requests</Th>
+                {showAvgTarget && <Th>Avg Target Rate</Th>}
               </tr>
             </thead>
             <tbody>
@@ -732,11 +736,12 @@ function PrioritizationSection({ title, lanes }) {
                   <Td>{l.destination}</Td>
                   <Td>{l.vehicle_type}</Td>
                   <Td>{l.request_count}</Td>
+                  {showAvgTarget && <Td>{l.avg_target_rate != null ? fmt(l.avg_target_rate) : "-"}</Td>}
                 </tr>
               ))}
               {lanes.length === 0 && (
                 <tr>
-                  <Td className="text-gray-400" colSpan={4}>None</Td>
+                  <Td className="text-gray-400" colSpan={showAvgTarget ? 5 : 4}>None</Td>
                 </tr>
               )}
             </tbody>
@@ -748,7 +753,9 @@ function PrioritizationSection({ title, lanes }) {
           )}
         </>
       )}
-      {expanded && fullLanes && <LaneFilterTable lanes={fullLanes} onClose={() => setExpanded(false)} />}
+      {expanded && fullLanes && (
+        <LaneFilterTable lanes={fullLanes} onClose={() => setExpanded(false)} showAvgTarget={showAvgTarget} />
+      )}
     </div>
   );
 }
@@ -947,7 +954,7 @@ function VmView() {
 
       {tab === "summary" && summary && (
         <div className="grid grid-cols-2 gap-6">
-          <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} />
+          <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
           <PrioritizationSection title="Missing lanes (no rate at all)" lanes={summary.missing_lanes} />
         </div>
       )}

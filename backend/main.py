@@ -446,6 +446,7 @@ class LaneSummary(BaseModel):
     destination: str
     vehicle_type: str
     request_count: int
+    avg_target_rate: float | None = None
 
 
 class VmSummary(BaseModel):
@@ -683,7 +684,7 @@ async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
     await require_role(request, "vm")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, COUNT(*) c
+            """SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
                FROM vm_requests
                WHERE status IN ('open', 'in_progress') AND current_final_rate IS NOT NULL
                GROUP BY origin, destination, vehicle_type
@@ -702,9 +703,13 @@ async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
         )
         missing = await cur.fetchall()
 
+    to_seeking_lane = lambda r: LaneSummary(
+        origin=r[0], destination=r[1], vehicle_type=r[2], request_count=r[3],
+        avg_target_rate=round(float(r[4]), 2) if r[4] is not None else None,
+    )
     to_lane = lambda r: LaneSummary(origin=r[0], destination=r[1], vehicle_type=r[2], request_count=r[3])
     return VmSummary(
-        seeking_lower_rate=[to_lane(r) for r in seeking],
+        seeking_lower_rate=[to_seeking_lane(r) for r in seeking],
         missing_lanes=[to_lane(r) for r in missing],
     )
 

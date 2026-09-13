@@ -276,7 +276,12 @@
           "origin": { "type": "string" },
           "destination": { "type": "string" },
           "vehicle_type": { "type": "string" },
-          "request_count": { "type": "integer" }
+          "request_count": { "type": "integer" },
+          "avg_target_rate": {
+            "type": "number",
+            "nullable": true,
+            "description": "Average target_rate across the requests grouped into this lane (seeking_lower_rate bucket only)."
+          }
         }
       },
       "MasterRateUploadResult": { "type": "object", "properties": { "row_count": { "type": "integer" } } },
