@@ -436,6 +436,7 @@ class VmRequest(BaseModel):
     aging_days: int
     submission_row_id: int | None = None
     shipper_name: str | None = None
+    sales_pic: str | None = None
 
 
 class VmRequestList(BaseModel):
@@ -458,7 +459,7 @@ class VmSummary(BaseModel):
 VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
-           vr.submission_row_id, s.shipper_name
+           vr.submission_row_id, s.shipper_name, s.sales_pic
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -488,6 +489,7 @@ def _to_vm_request(r) -> VmRequest:
         aging_days=aging_days,
         submission_row_id=r[11],
         shipper_name=r[12],
+        sales_pic=r[13],
     )
 
 

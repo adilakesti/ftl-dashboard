@@ -264,7 +264,8 @@
           "created_at": { "type": "string" },
           "aging_days": { "type": "integer" },
           "submission_row_id": { "type": "integer", "nullable": true },
-          "shipper_name": { "type": "string", "nullable": true, "description": "From the originating submission, when this request came from one; null for ad-hoc requests." }
+          "shipper_name": { "type": "string", "nullable": true, "description": "From the originating submission, when this request came from one; null for ad-hoc requests." },
+          "sales_pic": { "type": "string", "nullable": true, "description": "Sales PIC from the originating submission." }
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },

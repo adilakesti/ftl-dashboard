@@ -922,7 +922,7 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
     return a.localeCompare(b);
   });
 
-  const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !c[name] }));
+  const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !(c[name] ?? true) }));
 
   const resolveReady = async (name) => {
     setResolving(name);
@@ -945,19 +945,19 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
     <div className="space-y-4">
       {shipperNames.map((name) => {
         const rows = groups[name];
-        const isCollapsed = collapsed[name];
+        const isCollapsed = collapsed[name] ?? true;
+        const salesPic = rows[0].sales_pic || rows[0].requested_by;
         const openCount = rows.filter((r) => r.status === "open" || r.status === "in_progress").length;
         return (
           <div key={name} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50">
               <button onClick={() => toggle(name)} className="flex-1 text-left">
-                <span className="font-semibold text-sm">
-                  {name}{" "}
-                  <span className="text-gray-400 font-normal">
-                    ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
-                  </span>
-                  {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
+                <span className="font-semibold text-sm">{name}</span>
+                <span className="ml-2 text-xs text-gray-400">{salesPic}</span>
+                <span className="ml-2 text-xs text-gray-400">
+                  ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
                 </span>
+                {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
               </button>
               {openCount > 0 && (
                 <button
