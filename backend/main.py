@@ -613,7 +613,49 @@ async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float
             )
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
+
+    await _auto_resolve_matching(pool, {(master_rates.norm(req["origin"]), master_rates.norm(req["destination"]), master_rates.norm(req["vehicle_type"]))}, resolved_by)
     return _to_vm_request(row)
+
+
+async def _auto_resolve_matching(pool, lane_keys: set[tuple[str, str, str]], resolved_by: str) -> int:
+    """Resolve every open/in_progress request whose lane is in lane_keys and now
+    has master-rate cost data — used after a master-rate upload (or a per-request
+    resolution) so sibling requests for the same OD+vehicle across other sales
+    don't need to be filled in one by one."""
+    if not lane_keys:
+        return 0
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id, origin, destination, vehicle_type, target_rate, submission_row_id "
+            "FROM vm_requests WHERE status IN ('open', 'in_progress')"
+        )
+        rows = await cur.fetchall()
+
+    resolved = 0
+    for r in rows:
+        req_id, origin, destination, vehicle_type, target_rate, submission_row_id = r
+        key = (master_rates.norm(origin), master_rates.norm(destination), master_rates.norm(vehicle_type))
+        if key not in lane_keys:
+            continue
+        costs = await master_rates.find_costs(pool, origin, destination, vehicle_type)
+        if not costs:
+            continue
+        result = pricing.compute_final_rate(costs, float(target_rate) if target_rate is not None else None)
+        async with pool.acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
+                   current_final_rate = %s WHERE id = %s""",
+                (result.matched_vendor, result.matched_cost, result.final_rate, req_id),
+            )
+            if submission_row_id:
+                await cur.execute(
+                    """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
+                       matched_cost = %s WHERE id = %s""",
+                    (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, submission_row_id),
+                )
+        resolved += 1
+    return resolved
 
 
 class VendorCostIn(BaseModel):
@@ -685,6 +727,41 @@ async def close_vm_request_no_vendor(request_id: int, request: Request):
     return _to_vm_request(row)
 
 
+class ResolveReadyResult(BaseModel):
+    checked_count: int
+    resolved_count: int
+
+
+UNKNOWN_SHIPPER_KEY = "__unknown__"
+
+
+@app.post("/api/vm/requests/resolve-ready", response_model=ResolveReadyResult)
+async def resolve_requests_ready(request: Request, shipper_name: str | None = Query(None)):
+    """VM: recompute and resolve every open/in_progress request (optionally scoped
+    to one shipper, or the ad-hoc/unknown-shipper bucket) that already has master
+    vendor-rate data for its lane — for bulk-clearing a shipper's tickets after
+    the master rates were uploaded, instead of resolving one by one."""
+    email = await require_role(request, "vm")
+    pool = db.pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        if shipper_name == UNKNOWN_SHIPPER_KEY:
+            await cur.execute(
+                f"{VM_REQUEST_SELECT_FROM} WHERE vr.status IN ('open', 'in_progress') AND s.shipper_name IS NULL"
+            )
+        elif shipper_name:
+            await cur.execute(
+                f"{VM_REQUEST_SELECT_FROM} WHERE vr.status IN ('open', 'in_progress') AND s.shipper_name = %s",
+                (shipper_name,),
+            )
+        else:
+            await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.status IN ('open', 'in_progress')")
+        rows = await cur.fetchall()
+
+    lane_keys = {(master_rates.norm(r[1]), master_rates.norm(r[2]), master_rates.norm(r[3])) for r in rows}
+    resolved_count = await _auto_resolve_matching(pool, lane_keys, email)
+    return ResolveReadyResult(checked_count=len(rows), resolved_count=resolved_count)
+
+
 @app.get("/api/vm/summary", response_model=VmSummary)
 async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
     await require_role(request, "vm")
@@ -728,6 +805,7 @@ async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
 
 class MasterRateUploadResult(BaseModel):
     row_count: int
+    resolved_count: int
 
 
 class MasterRateMeta(BaseModel):
@@ -761,8 +839,13 @@ async def upload_master_rates(request: Request, file: UploadFile):
         raise HTTPException(400, str(e))
     if not rows:
         raise HTTPException(400, "No usable rows found in CSV")
-    row_count = await master_rates.upsert_rows(db.pool(), rows, email, file.filename)
-    return MasterRateUploadResult(row_count=row_count)
+    pool = db.pool()
+    row_count = await master_rates.upsert_rows(pool, rows, email, file.filename)
+
+    touched_lanes = {(master_rates.norm(r["origin"]), master_rates.norm(r["destination"]), master_rates.norm(r["vehicle_type"])) for r in rows}
+    resolved_count = await _auto_resolve_matching(pool, touched_lanes, email)
+
+    return MasterRateUploadResult(row_count=row_count, resolved_count=resolved_count)
 
 
 @app.get("/api/master-rates/meta", response_model=MasterRateMeta)

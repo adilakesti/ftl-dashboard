@@ -137,9 +137,16 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
       }
     },
+    "/api/vm/requests/resolve-ready": {
+      "post": {
+        "summary": "VM: bulk-resolve every open/in_progress request (optionally scoped to one shipper, or the ad-hoc bucket via shipper_name=__unknown__) whose lane already has master vendor-rate data.",
+        "parameters": [{ "name": "shipper_name", "in": "query", "required": false, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResolveReadyResult" } } } } }
+      }
+    },
     "/api/master-rates/upload": {
       "post": {
-        "summary": "VM: upload a CSV (Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name); each row is upserted — existing lanes not present in the file are kept.",
+        "summary": "VM: upload a CSV (Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name); each row is upserted — existing lanes not present in the file are kept. Also auto-resolves any open/in_progress requests on the uploaded lanes.",
         "requestBody": {
           "required": true,
           "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "file": { "type": "string", "format": "binary" } }, "required": ["file"] } } }
@@ -285,7 +292,20 @@
           }
         }
       },
-      "MasterRateUploadResult": { "type": "object", "properties": { "row_count": { "type": "integer" } } },
+      "MasterRateUploadResult": {
+        "type": "object",
+        "properties": {
+          "row_count": { "type": "integer" },
+          "resolved_count": { "type": "integer", "description": "How many open/in_progress VM requests were auto-resolved by this upload." }
+        }
+      },
+      "ResolveReadyResult": {
+        "type": "object",
+        "properties": {
+          "checked_count": { "type": "integer" },
+          "resolved_count": { "type": "integer" }
+        }
+      },
       "MasterRateMeta": {
         "type": "object",
         "properties": {

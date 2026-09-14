@@ -538,7 +538,10 @@ function MasterRatesPanel() {
         throw new Error(body.detail || "Upload failed");
       }
       const data = await res.json();
-      setOk(`Saved ${data.row_count} vendor rate row(s).`);
+      setOk(
+        `Saved ${data.row_count} vendor rate row(s).` +
+          (data.resolved_count > 0 ? ` Auto-resolved ${data.resolved_count} matching VM request(s).` : "")
+      );
       loadMeta();
       if (showExisting) loadRates();
     } catch (err) {
@@ -904,8 +907,9 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
 
 const UNKNOWN_SHIPPER = "Ad-hoc / unknown shipper";
 
-function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus }) {
+function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh }) {
   const [collapsed, setCollapsed] = useState({});
+  const [resolving, setResolving] = useState(null);
 
   const groups = {};
   for (const r of requests) {
@@ -920,6 +924,23 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus }
 
   const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !c[name] }));
 
+  const resolveReady = async (name) => {
+    setResolving(name);
+    try {
+      const key = name === UNKNOWN_SHIPPER ? "__unknown__" : name;
+      const res = await fetch(`/api/vm/requests/resolve-ready?shipper_name=${encodeURIComponent(key)}`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (data.resolved_count === 0) {
+        alert("None of this shipper's open lanes have master-rate data yet.");
+      }
+      onRefresh();
+    } finally {
+      setResolving(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {shipperNames.map((name) => {
@@ -928,15 +949,29 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus }
         const openCount = rows.filter((r) => r.status === "open" || r.status === "in_progress").length;
         return (
           <div key={name} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-            <button
-              onClick={() => toggle(name)}
-              className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50"
-            >
-              <span className="font-semibold text-sm">
-                {name} <span className="text-gray-400 font-normal">({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)</span>
-              </span>
-              <span className="text-xs text-gray-400">{isCollapsed ? "Expand" : "Collapse"}</span>
-            </button>
+            <div className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50">
+              <button onClick={() => toggle(name)} className="flex-1 text-left">
+                <span className="font-semibold text-sm">
+                  {name}{" "}
+                  <span className="text-gray-400 font-normal">
+                    ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
+                  </span>
+                  {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
+                </span>
+              </button>
+              {openCount > 0 && (
+                <button
+                  onClick={() => resolveReady(name)}
+                  disabled={resolving === name}
+                  className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 mr-3"
+                >
+                  {resolving === name ? "Resolving…" : "Resolve all with existing rate"}
+                </button>
+              )}
+              <button onClick={() => toggle(name)} className="text-xs text-gray-400">
+                {isCollapsed ? "Expand" : "Collapse"}
+              </button>
+            </div>
             {!isCollapsed && (
               <div className="overflow-x-auto border-t border-gray-100">
                 <table className="w-full">
@@ -1068,6 +1103,10 @@ function VmView() {
             selectedId={selectedId}
             setSelectedId={setSelectedId}
             updateStatus={updateStatus}
+            onRefresh={() => {
+              loadRequests();
+              loadSummary();
+            }}
           />
 
           {selected && (
