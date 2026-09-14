@@ -79,6 +79,15 @@ async def require_superadmin(request: Request) -> str:
     return email
 
 
+async def require_any_role(request: Request) -> str:
+    email, actual_role = await current_user(request)
+    if not email:
+        raise HTTPException(401, "Not signed in")
+    if actual_role not in ("sales", "vm", "superadmin"):
+        raise HTTPException(403, "Not provisioned")
+    return email
+
+
 @app.get("/api/me", response_model=Me)
 async def me(request: Request):
     email, role = await current_user(request)
@@ -437,6 +446,10 @@ class VmRequest(BaseModel):
     submission_row_id: int | None = None
     shipper_name: str | None = None
     sales_pic: str | None = None
+    shipper_status: str | None = None
+    potential_monthly_revenue: float | None = None
+    commodity_type: str | None = None
+    high_value_fragile: bool | None = None
 
 
 class VmRequestList(BaseModel):
@@ -459,7 +472,8 @@ class VmSummary(BaseModel):
 VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
-           vr.submission_row_id, s.shipper_name, s.sales_pic
+           vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
+           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -490,6 +504,10 @@ def _to_vm_request(r) -> VmRequest:
         submission_row_id=r[11],
         shipper_name=r[12],
         sales_pic=r[13],
+        shipper_status=r[14],
+        potential_monthly_revenue=float(r[15]) if r[15] is not None else None,
+        commodity_type=r[16],
+        high_value_fragile=bool(r[17]) if r[17] is not None else None,
     )
 
 
@@ -906,6 +924,20 @@ async def submission_tickets(submission_id: int, request: Request):
     return VmRequestList(requests=[_to_vm_request(r) for r in rows])
 
 
+@app.get("/api/tickets", response_model=VmRequestList)
+async def my_tickets(request: Request):
+    """Sales: every VM request this user has raised, across all their
+    submissions — the basis for the global Active/Completed Request views."""
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"{VM_REQUEST_SELECT_FROM} WHERE vr.requested_by = %s ORDER BY vr.created_at DESC",
+            (email,),
+        )
+        rows = await cur.fetchall()
+    return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+
+
 @app.get("/api/submissions/{submission_id}/quotation.xlsx")
 async def submission_quotation(submission_id: int, request: Request):
     email = await require_role(request, "sales")
@@ -948,3 +980,68 @@ async def submission_quotation(submission_id: int, request: Request):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename=quotation_submission_{submission_id}.xlsx"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Discussion thread on a VM request — sticks to the ticket across
+# open -> resolved/closed, visible to both sales and VM.
+# ---------------------------------------------------------------------------
+
+
+class CommentIn(BaseModel):
+    message: str
+
+
+class Comment(BaseModel):
+    id: int
+    vm_request_id: int
+    author_email: str
+    message: str
+    created_at: str
+
+
+class CommentList(BaseModel):
+    comments: list[Comment]
+
+
+@app.get("/api/vm-requests/{request_id}/comments", response_model=CommentList)
+async def list_comments(request_id: int, request: Request):
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM vm_requests WHERE id = %s", (request_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "Request not found")
+        await cur.execute(
+            "SELECT id, vm_request_id, author_email, message, created_at FROM vm_request_comments "
+            "WHERE vm_request_id = %s ORDER BY created_at ASC",
+            (request_id,),
+        )
+        rows = await cur.fetchall()
+    return CommentList(
+        comments=[
+            Comment(id=r[0], vm_request_id=r[1], author_email=r[2], message=r[3], created_at=str(r[4]))
+            for r in rows
+        ]
+    )
+
+
+@app.post("/api/vm-requests/{request_id}/comments", response_model=Comment, status_code=201)
+async def create_comment(request_id: int, body: CommentIn, request: Request):
+    email = await require_any_role(request)
+    if not body.message.strip():
+        raise HTTPException(400, "message is required")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM vm_requests WHERE id = %s", (request_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "Request not found")
+        await cur.execute(
+            "INSERT INTO vm_request_comments (vm_request_id, author_email, message) VALUES (%s, %s, %s)",
+            (request_id, email, body.message.strip()),
+        )
+        comment_id = cur.lastrowid
+        await cur.execute(
+            "SELECT id, vm_request_id, author_email, message, created_at FROM vm_request_comments WHERE id = %s",
+            (comment_id,),
+        )
+        row = await cur.fetchone()
+    return Comment(id=row[0], vm_request_id=row[1], author_email=row[2], message=row[3], created_at=str(row[4]))

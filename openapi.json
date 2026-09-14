@@ -90,6 +90,25 @@
         "responses": { "200": { "description": "An .xlsx file", "content": { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {} } } }
       }
     },
+    "/api/tickets": {
+      "get": {
+        "summary": "Sales: every VM request this user has raised, across all their submissions — feeds the global Active/Completed Request views.",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestList" } } } } }
+      }
+    },
+    "/api/vm-requests/{request_id}/comments": {
+      "get": {
+        "summary": "List the discussion thread on a VM request (visible to sales/VM/superadmin; persists across open, resolved and closed states).",
+        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentList" } } } } }
+      },
+      "post": {
+        "summary": "Post a message to a VM request's discussion thread.",
+        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentIn" } } } },
+        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } } }
+      }
+    },
     "/api/vm-requests": {
       "post": {
         "summary": "Sales: escalate a lane (an existing submission row, or ad hoc) to Vendor Management.",
@@ -265,7 +284,11 @@
           "aging_days": { "type": "integer" },
           "submission_row_id": { "type": "integer", "nullable": true },
           "shipper_name": { "type": "string", "nullable": true, "description": "From the originating submission, when this request came from one; null for ad-hoc requests." },
-          "sales_pic": { "type": "string", "nullable": true, "description": "Sales PIC from the originating submission." }
+          "sales_pic": { "type": "string", "nullable": true, "description": "Sales PIC from the originating submission." },
+          "shipper_status": { "type": "string", "nullable": true, "enum": ["new", "existing", null] },
+          "potential_monthly_revenue": { "type": "number", "nullable": true },
+          "commodity_type": { "type": "string", "nullable": true },
+          "high_value_fragile": { "type": "boolean", "nullable": true }
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },
@@ -329,6 +352,18 @@
         }
       },
       "VendorRateList": { "type": "object", "properties": { "rates": { "type": "array", "items": { "$ref": "#/components/schemas/VendorRate" } } } },
+      "CommentIn": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" } } },
+      "Comment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "vm_request_id": { "type": "integer" },
+          "author_email": { "type": "string" },
+          "message": { "type": "string" },
+          "created_at": { "type": "string" }
+        }
+      },
+      "CommentList": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } },
       "VmSummary": {
         "type": "object",
         "properties": {
