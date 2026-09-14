@@ -103,10 +103,23 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentList" } } } } }
       },
       "post": {
-        "summary": "Post a message to a VM request's discussion thread.",
+        "summary": "Post a message to a VM request's discussion thread. Used only for ad-hoc requests with no parent submission — submission-linked requests use the shipper-level thread instead.",
         "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentIn" } } } },
         "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } } }
+      }
+    },
+    "/api/submissions/{submission_id}/comments": {
+      "get": {
+        "summary": "List the discussion thread on a shipper (submission) — shared across every VM request raised from its rows, surviving a lane's move from active to completed.",
+        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionCommentList" } } } } }
+      },
+      "post": {
+        "summary": "Post a message to a shipper's discussion thread.",
+        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionCommentIn" } } } },
+        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionComment" } } } } }
       }
     },
     "/api/vm-requests": {
@@ -283,6 +296,7 @@
           "created_at": { "type": "string" },
           "aging_days": { "type": "integer" },
           "submission_row_id": { "type": "integer", "nullable": true },
+          "submission_id": { "type": "integer", "nullable": true, "description": "The parent submission (shipper), when this request came from one; null for ad-hoc requests." },
           "shipper_name": { "type": "string", "nullable": true, "description": "From the originating submission, when this request came from one; null for ad-hoc requests." },
           "sales_pic": { "type": "string", "nullable": true, "description": "Sales PIC from the originating submission." },
           "shipper_status": { "type": "string", "nullable": true, "enum": ["new", "existing", null] },
@@ -364,6 +378,18 @@
         }
       },
       "CommentList": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } },
+      "SubmissionCommentIn": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" } } },
+      "SubmissionComment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "submission_id": { "type": "integer" },
+          "author_email": { "type": "string" },
+          "message": { "type": "string" },
+          "created_at": { "type": "string" }
+        }
+      },
+      "SubmissionCommentList": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/SubmissionComment" } } } },
       "VmSummary": {
         "type": "object",
         "properties": {

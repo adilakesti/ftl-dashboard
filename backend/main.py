@@ -444,6 +444,7 @@ class VmRequest(BaseModel):
     created_at: str
     aging_days: int
     submission_row_id: int | None = None
+    submission_id: int | None = None
     shipper_name: str | None = None
     sales_pic: str | None = None
     shipper_status: str | None = None
@@ -473,7 +474,7 @@ VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
-           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile
+           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -508,6 +509,7 @@ def _to_vm_request(r) -> VmRequest:
         potential_monthly_revenue=float(r[15]) if r[15] is not None else None,
         commodity_type=r[16],
         high_value_fragile=bool(r[17]) if r[17] is not None else None,
+        submission_id=r[18],
     )
 
 
@@ -1045,3 +1047,71 @@ async def create_comment(request_id: int, body: CommentIn, request: Request):
         )
         row = await cur.fetchone()
     return Comment(id=row[0], vm_request_id=row[1], author_email=row[2], message=row[3], created_at=str(row[4]))
+
+
+# ---------------------------------------------------------------------------
+# Discussion thread on a SHIPPER (submission) — shared across every VM
+# request raised from that submission's rows, so it survives the OD lane
+# moving from active to completed.
+# ---------------------------------------------------------------------------
+
+
+class SubmissionCommentIn(BaseModel):
+    message: str
+
+
+class SubmissionComment(BaseModel):
+    id: int
+    submission_id: int
+    author_email: str
+    message: str
+    created_at: str
+
+
+class SubmissionCommentList(BaseModel):
+    comments: list[SubmissionComment]
+
+
+@app.get("/api/submissions/{submission_id}/comments", response_model=SubmissionCommentList)
+async def list_submission_comments(submission_id: int, request: Request):
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM submissions WHERE id = %s", (submission_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "Submission not found")
+        await cur.execute(
+            "SELECT id, submission_id, author_email, message, created_at FROM submission_comments "
+            "WHERE submission_id = %s ORDER BY created_at ASC",
+            (submission_id,),
+        )
+        rows = await cur.fetchall()
+    return SubmissionCommentList(
+        comments=[
+            SubmissionComment(id=r[0], submission_id=r[1], author_email=r[2], message=r[3], created_at=str(r[4]))
+            for r in rows
+        ]
+    )
+
+
+@app.post("/api/submissions/{submission_id}/comments", response_model=SubmissionComment, status_code=201)
+async def create_submission_comment(submission_id: int, body: SubmissionCommentIn, request: Request):
+    email = await require_any_role(request)
+    if not body.message.strip():
+        raise HTTPException(400, "message is required")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM submissions WHERE id = %s", (submission_id,))
+        if not await cur.fetchone():
+            raise HTTPException(404, "Submission not found")
+        await cur.execute(
+            "INSERT INTO submission_comments (submission_id, author_email, message) VALUES (%s, %s, %s)",
+            (submission_id, email, body.message.strip()),
+        )
+        comment_id = cur.lastrowid
+        await cur.execute(
+            "SELECT id, submission_id, author_email, message, created_at FROM submission_comments WHERE id = %s",
+            (comment_id,),
+        )
+        row = await cur.fetchone()
+    return SubmissionComment(
+        id=row[0], submission_id=row[1], author_email=row[2], message=row[3], created_at=str(row[4])
+    )

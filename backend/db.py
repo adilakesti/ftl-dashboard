@@ -22,7 +22,10 @@ def _dsn() -> dict:
 async def lifespan_pool():
     global _pool
     if os.getenv("DATABASE_URL"):
-        _pool = await asyncmy.create_pool(**_dsn(), autocommit=True)
+        # Generous pool: this UI fires several independent GET requests per
+        # tab (and each expanded ticket card adds its own), so quick
+        # navigation can briefly want more than the default minsize=1/maxsize=10.
+        _pool = await asyncmy.create_pool(**_dsn(), autocommit=True, minsize=2, maxsize=30)
     yield
     if _pool is not None:
         _pool.close()

@@ -1,4 +1,36 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState } from "react";
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("FTL Pricing Dashboard crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="p-8">
+          <p className="font-medium text-gray-700 mb-2">Something went wrong.</p>
+          <p className="text-sm text-gray-500 mb-4">
+            {this.state.error?.message || "An unexpected error occurred."}
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const RATE_REQUEST_TEMPLATE_CSV =
   "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate\n" +
@@ -82,27 +114,41 @@ function WizardSteps({ step }) {
   );
 }
 
-function Discussion({ requestId }) {
+function Discussion({ endpoint }) {
   const [comments, setComments] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
 
   const load = () =>
-    fetch(`/api/vm-requests/${requestId}/comments`)
+    fetch(endpoint)
       .then((r) => r.json())
       .then((d) => {
         setComments(d.comments);
         setLoaded(true);
-      });
+      })
+      .catch(() => {});
 
-  useEffect(load, [requestId]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(endpoint)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        setComments(d.comments);
+        setLoaded(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [endpoint]);
 
   const send = async () => {
     if (!text.trim() || sending) return;
     setSending(true);
     try {
-      await fetch(`/api/vm-requests/${requestId}/comments`, {
+      await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text.trim() }),
@@ -149,8 +195,13 @@ function Discussion({ requestId }) {
   );
 }
 
-function TicketDetailCard({ ticket }) {
+const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
+
+function ShipperTicketGroup({ shipperName, tickets }) {
   const [expanded, setExpanded] = useState(false);
+  const first = tickets[0];
+  const submissionId = first.submission_id;
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
       <button
@@ -158,54 +209,81 @@ function TicketDetailCard({ ticket }) {
         className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50"
       >
         <span className="text-sm">
-          <span className="font-medium">
-            {ticket.origin} → {ticket.destination}
-          </span>{" "}
-          <span className="text-gray-400">· {ticket.vehicle_type}</span>
-          <span className="text-gray-400 text-xs ml-2">
-            {STATUS_LABEL[ticket.status] || ticket.status} · {ticket.aging_days}d
+          <span className="font-semibold">{shipperName}</span>
+          {first.sales_pic && <span className="ml-2 text-xs text-gray-400">{first.sales_pic}</span>}
+          <span className="ml-2 text-xs text-gray-400">
+            ({tickets.length} lane{tickets.length !== 1 ? "s" : ""})
           </span>
-          {ticket.shipper_name && <span className="text-gray-400 text-xs ml-2">({ticket.shipper_name})</span>}
         </span>
         <span className="text-xs text-gray-400">{expanded ? "Collapse" : "Expand"}</span>
       </button>
       {expanded && (
         <div className="border-t border-gray-100 px-4 py-3">
-          <div className="grid grid-cols-3 gap-3 text-sm mb-3">
-            <div>
-              <span className="text-xs text-gray-400 block">Shipper</span>
-              {ticket.shipper_name || "-"}
+          {shipperName !== UNKNOWN_SHIPPER_SALES && (
+            <div className="grid grid-cols-3 gap-3 text-sm mb-4 pb-4 border-b border-gray-100">
+              <div>
+                <span className="text-xs text-gray-400 block">Shipper</span>
+                {first.shipper_name || "-"}
+              </div>
+              <div>
+                <span className="text-xs text-gray-400 block">Sales PIC</span>
+                {first.sales_pic || "-"}
+              </div>
+              <div>
+                <span className="text-xs text-gray-400 block">Shipper Status</span>
+                {first.shipper_status || "-"}
+              </div>
+              <div>
+                <span className="text-xs text-gray-400 block">Potential Monthly Revenue</span>
+                {fmt(first.potential_monthly_revenue)}
+              </div>
+              <div>
+                <span className="text-xs text-gray-400 block">Commodity</span>
+                {first.commodity_type || "-"}
+              </div>
+              <div>
+                <span className="text-xs text-gray-400 block">High-value / Fragile</span>
+                {first.high_value_fragile ? "Yes" : "No"}
+              </div>
             </div>
-            <div>
-              <span className="text-xs text-gray-400 block">Sales PIC</span>
-              {ticket.sales_pic || "-"}
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">Shipper Status</span>
-              {ticket.shipper_status || "-"}
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">Potential Monthly Revenue</span>
-              {fmt(ticket.potential_monthly_revenue)}
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">Commodity</span>
-              {ticket.commodity_type || "-"}
-            </div>
-            <div>
-              <span className="text-xs text-gray-400 block">High-value / Fragile</span>
-              {ticket.high_value_fragile ? "Yes" : "No"}
-            </div>
-          </div>
-          <div className="text-sm">
-            <span className="text-xs text-gray-400 block">Outcome</span>
-            {ticket.status === "resolved"
-              ? `${ticket.resolved_vendor || ""} — ${fmt(ticket.current_final_rate)}`
-              : ticket.status === "closed_no_vendor"
-              ? "No vendor available"
-              : "Pending"}
-          </div>
-          <Discussion requestId={ticket.id} />
+          )}
+
+          <table className="w-full mb-1">
+            <thead>
+              <tr>
+                <Th>Origin</Th>
+                <Th>Destination</Th>
+                <Th>Vehicle</Th>
+                <Th>Status</Th>
+                <Th>Aging (days)</Th>
+                <Th>Outcome</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {tickets.map((t) => (
+                <tr key={t.id}>
+                  <Td>{t.origin}</Td>
+                  <Td>{t.destination}</Td>
+                  <Td>{t.vehicle_type}</Td>
+                  <Td>{STATUS_LABEL[t.status] || t.status}</Td>
+                  <Td>{t.aging_days}</Td>
+                  <Td className={t.status === "closed_no_vendor" ? "text-red-500" : "font-medium"}>
+                    {t.status === "resolved"
+                      ? `${t.resolved_vendor || ""} — ${fmt(t.current_final_rate)}`
+                      : t.status === "closed_no_vendor"
+                      ? "No vendor available"
+                      : "-"}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <Discussion
+            endpoint={
+              submissionId ? `/api/submissions/${submissionId}/comments` : `/api/vm-requests/${first.id}/comments`
+            }
+          />
         </div>
       )}
     </div>
@@ -214,16 +292,25 @@ function TicketDetailCard({ ticket }) {
 
 function GlobalTicketsList({ tickets, emptyLabel }) {
   const [q, setQ] = useState("");
-  const filtered = tickets.filter((t) => {
-    const s = q.toLowerCase();
-    return (
+  const s = q.toLowerCase();
+  const filteredTickets = tickets.filter(
+    (t) =>
       !s ||
       (t.shipper_name || "").toLowerCase().includes(s) ||
-      (t.sales_pic || "").toLowerCase().includes(s) ||
-      (t.origin || "").toLowerCase().includes(s) ||
-      (t.destination || "").toLowerCase().includes(s)
-    );
+      (t.sales_pic || "").toLowerCase().includes(s)
+  );
+
+  const groups = {};
+  for (const t of filteredTickets) {
+    const key = t.shipper_name || UNKNOWN_SHIPPER_SALES;
+    (groups[key] = groups[key] || []).push(t);
+  }
+  const shipperNames = Object.keys(groups).sort((a, b) => {
+    if (a === UNKNOWN_SHIPPER_SALES) return 1;
+    if (b === UNKNOWN_SHIPPER_SALES) return -1;
+    return a.localeCompare(b);
   });
+
   return (
     <div>
       <input
@@ -233,10 +320,10 @@ function GlobalTicketsList({ tickets, emptyLabel }) {
         onChange={(e) => setQ(e.target.value)}
       />
       <div className="space-y-2">
-        {filtered.map((t) => (
-          <TicketDetailCard key={t.id} ticket={t} />
+        {shipperNames.map((name) => (
+          <ShipperTicketGroup key={name} shipperName={name} tickets={groups[name]} />
         ))}
-        {filtered.length === 0 && <p className="text-sm text-gray-400">{emptyLabel}</p>}
+        {shipperNames.length === 0 && <p className="text-sm text-gray-400">{emptyLabel}</p>}
       </div>
     </div>
   );
@@ -1019,7 +1106,13 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
         </button>
       </div>
 
-      <Discussion requestId={request.id} />
+      <Discussion
+        endpoint={
+          request.submission_id
+            ? `/api/submissions/${request.submission_id}/comments`
+            : `/api/vm-requests/${request.id}/comments`
+        }
+      />
     </div>
   );
 }
@@ -1253,7 +1346,9 @@ function AdminPanel() {
   const [saving, setSaving] = useState(false);
 
   const loadUsers = () => fetch("/api/admin/users").then((r) => r.json()).then((d) => setUsers(d.users));
-  useEffect(loadUsers, []);
+  useEffect(() => {
+    loadUsers();
+  }, []);
 
   const addUser = async (e) => {
     e.preventDefault();
@@ -1380,7 +1475,7 @@ function AdminPanel() {
 // App shell
 // ---------------------------------------------------------------------------
 
-export default function App() {
+function AppInner() {
   const { me, loading } = useMe();
   const [view, setView] = useState("sales");
 
@@ -1438,5 +1533,13 @@ export default function App() {
         {activeView === "admin" && <AdminPanel />}
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
