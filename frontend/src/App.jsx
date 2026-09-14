@@ -899,6 +899,108 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
 }
 
 // ---------------------------------------------------------------------------
+// VM: requests grouped by shipper
+// ---------------------------------------------------------------------------
+
+const UNKNOWN_SHIPPER = "Ad-hoc / unknown shipper";
+
+function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus }) {
+  const [collapsed, setCollapsed] = useState({});
+
+  const groups = {};
+  for (const r of requests) {
+    const key = r.shipper_name || UNKNOWN_SHIPPER;
+    (groups[key] = groups[key] || []).push(r);
+  }
+  const shipperNames = Object.keys(groups).sort((a, b) => {
+    if (a === UNKNOWN_SHIPPER) return 1;
+    if (b === UNKNOWN_SHIPPER) return -1;
+    return a.localeCompare(b);
+  });
+
+  const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !c[name] }));
+
+  return (
+    <div className="space-y-4">
+      {shipperNames.map((name) => {
+        const rows = groups[name];
+        const isCollapsed = collapsed[name];
+        const openCount = rows.filter((r) => r.status === "open" || r.status === "in_progress").length;
+        return (
+          <div key={name} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+            <button
+              onClick={() => toggle(name)}
+              className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50"
+            >
+              <span className="font-semibold text-sm">
+                {name} <span className="text-gray-400 font-normal">({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)</span>
+              </span>
+              <span className="text-xs text-gray-400">{isCollapsed ? "Expand" : "Collapse"}</span>
+            </button>
+            {!isCollapsed && (
+              <div className="overflow-x-auto border-t border-gray-100">
+                <table className="w-full">
+                  <thead>
+                    <tr>
+                      <Th>Origin</Th>
+                      <Th>Destination</Th>
+                      <Th>Vehicle</Th>
+                      <Th>Requested by</Th>
+                      <Th>Target Cost</Th>
+                      <Th>Current Final Rate</Th>
+                      <Th>Aging (days)</Th>
+                      <Th>Status</Th>
+                      <Th></Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.id} className={selectedId === r.id ? "bg-gray-50" : ""}>
+                        <Td>{r.origin}</Td>
+                        <Td>{r.destination}</Td>
+                        <Td>{r.vehicle_type}</Td>
+                        <Td className="text-gray-500">{r.requested_by}</Td>
+                        <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
+                        <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
+                        <Td>{r.aging_days}</Td>
+                        <Td>
+                          <select
+                            value={r.status}
+                            onChange={(e) => updateStatus(r.id, e.target.value)}
+                            className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                          >
+                            {Object.entries(STATUS_LABEL).map(([v, l]) => (
+                              <option key={v} value={v}>{l}</option>
+                            ))}
+                          </select>
+                        </Td>
+                        <Td>
+                          {r.status === "open" || r.status === "in_progress" ? (
+                            <button
+                              onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
+                              className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                            >
+                              {selectedId === r.id ? "Cancel" : "Fill rate"}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {shipperNames.length === 0 && <p className="text-sm text-gray-400">No requests yet</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // VM: view
 // ---------------------------------------------------------------------------
 
@@ -961,64 +1063,12 @@ function VmView() {
 
       {tab === "requests" && (
         <div>
-          <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr>
-                  <Th>Origin</Th>
-                  <Th>Destination</Th>
-                  <Th>Vehicle</Th>
-                  <Th>Requested by</Th>
-                  <Th>Target Cost</Th>
-                  <Th>Current Final Rate</Th>
-                  <Th>Aging (days)</Th>
-                  <Th>Status</Th>
-                  <Th></Th>
-                </tr>
-              </thead>
-              <tbody>
-                {requests.map((r) => (
-                  <tr key={r.id} className={selectedId === r.id ? "bg-gray-50" : ""}>
-                    <Td>{r.origin}</Td>
-                    <Td>{r.destination}</Td>
-                    <Td>{r.vehicle_type}</Td>
-                    <Td className="text-gray-500">{r.requested_by}</Td>
-                    <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
-                    <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
-                    <Td>{r.aging_days}</Td>
-                    <Td>
-                      <select
-                        value={r.status}
-                        onChange={(e) => updateStatus(r.id, e.target.value)}
-                        className="text-xs border border-gray-300 rounded px-1 py-0.5"
-                      >
-                        {Object.entries(STATUS_LABEL).map(([v, l]) => (
-                          <option key={v} value={v}>{l}</option>
-                        ))}
-                      </select>
-                    </Td>
-                    <Td>
-                      {r.status === "open" || r.status === "in_progress" ? (
-                        <button
-                          onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
-                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
-                        >
-                          {selectedId === r.id ? "Cancel" : "Fill rate"}
-                        </button>
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </Td>
-                  </tr>
-                ))}
-                {requests.length === 0 && (
-                  <tr>
-                    <Td className="text-gray-400" colSpan={9}>No requests yet</Td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          <RequestsByShipper
+            requests={requests}
+            selectedId={selectedId}
+            setSelectedId={setSelectedId}
+            updateStatus={updateStatus}
+          />
 
           {selected && (
             <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />

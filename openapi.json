@@ -256,7 +256,8 @@
           "resolved_cost": { "type": "number", "nullable": true },
           "created_at": { "type": "string" },
           "aging_days": { "type": "integer" },
-          "submission_row_id": { "type": "integer", "nullable": true }
+          "submission_row_id": { "type": "integer", "nullable": true },
+          "shipper_name": { "type": "string", "nullable": true, "description": "From the originating submission, when this request came from one; null for ad-hoc requests." }
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },

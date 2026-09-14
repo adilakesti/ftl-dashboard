@@ -435,6 +435,7 @@ class VmRequest(BaseModel):
     created_at: str
     aging_days: int
     submission_row_id: int | None = None
+    shipper_name: str | None = None
 
 
 class VmRequestList(BaseModel):
@@ -454,10 +455,14 @@ class VmSummary(BaseModel):
     missing_lanes: list[LaneSummary]
 
 
-VM_REQUEST_COLUMNS = (
-    "id, origin, destination, vehicle_type, target_rate, current_final_rate, "
-    "requested_by, status, resolved_vendor, resolved_cost, created_at, submission_row_id"
-)
+VM_REQUEST_SELECT_FROM = """
+    SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
+           vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
+           vr.submission_row_id, s.shipper_name
+    FROM vm_requests vr
+    LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
+    LEFT JOIN submissions s ON sr.submission_id = s.id
+"""
 
 
 def _to_vm_request(r) -> VmRequest:
@@ -482,6 +487,7 @@ def _to_vm_request(r) -> VmRequest:
         created_at=str(created_at),
         aging_days=aging_days,
         submission_row_id=r[11],
+        shipper_name=r[12],
     )
 
 
@@ -505,7 +511,7 @@ async def create_vm_request(body: VmRequestIn, request: Request):
             ),
         )
         req_id = cur.lastrowid
-        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (req_id,))
+        await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (req_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
@@ -515,8 +521,8 @@ async def list_vm_requests(request: Request):
     await require_role(request, "vm")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"""SELECT {VM_REQUEST_COLUMNS} FROM vm_requests
-                ORDER BY (status IN ('resolved', 'closed_no_vendor')), created_at ASC"""
+            f"""{VM_REQUEST_SELECT_FROM}
+                ORDER BY (vr.status IN ('resolved', 'closed_no_vendor')), vr.created_at ASC"""
         )
         rows = await cur.fetchall()
     return VmRequestList(requests=[_to_vm_request(r) for r in rows])
@@ -556,7 +562,7 @@ async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Req
             values.append(request_id)
             await cur.execute(f"UPDATE vm_requests SET {', '.join(fields)} WHERE id = %s", values)
 
-        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
+        await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
@@ -605,7 +611,7 @@ async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float
                    matched_cost = %s WHERE id = %s""",
                 (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, req["submission_row_id"]),
             )
-        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
+        await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
@@ -674,7 +680,7 @@ async def close_vm_request_no_vendor(request_id: int, request: Request):
                    matched_cost = NULL WHERE id = %s""",
                 ("No vendor available (VM)", req["submission_row_id"]),
             )
-        await cur.execute(f"SELECT {VM_REQUEST_COLUMNS} FROM vm_requests WHERE id = %s", (request_id,))
+        await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
 
@@ -806,9 +812,7 @@ async def submission_tickets(submission_id: int, request: Request):
             raise HTTPException(404, "Submission not found")
 
         await cur.execute(
-            f"""SELECT {", ".join("vr." + c.strip() for c in VM_REQUEST_COLUMNS.split(","))}
-                FROM vm_requests vr
-                JOIN submission_rows sr ON vr.submission_row_id = sr.id
+            f"""{VM_REQUEST_SELECT_FROM}
                 WHERE sr.submission_id = %s
                 ORDER BY vr.created_at ASC""",
             (submission_id,),
