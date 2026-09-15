@@ -1306,9 +1306,29 @@ function VmView() {
       </div>
 
       {tab === "summary" && summary && (
-        <div className="grid grid-cols-2 gap-6">
-          <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
-          <PrioritizationSection title="Missing lanes (no rate at all)" lanes={summary.missing_lanes} />
+        <div>
+          <p className="text-sm text-gray-500 mb-4">
+            Helps decide what to work on first: open lanes sales are still waiting on, ranked by how many
+            requests are piling up on each one.
+          </p>
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
+              <p className="text-xs text-gray-400 mt-2">
+                Lanes that already have a Final Rate, but sales asked for a lower one because it didn't meet
+                their target. Still open — hasn't been resolved or closed yet. "Avg Target Rate" averages the
+                target across every sales request on that lane.
+              </p>
+            </div>
+            <div>
+              <PrioritizationSection title="Missing lanes (no rate at all)" lanes={summary.missing_lanes} />
+              <p className="text-xs text-gray-400 mt-2">
+                Lanes with no vendor cost in the master data at all — still open and waiting on a rate. This is
+                not the same as "no vendor available": once a lane is closed with that outcome, it drops off
+                this list (see the ticket's Discussion / status instead).
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
