@@ -1308,24 +1308,24 @@ function VmView() {
       {tab === "summary" && summary && (
         <div>
           <p className="text-sm text-gray-500 mb-4">
-            Helps decide what to work on first: open lanes sales are still waiting on, ranked by how many
-            requests are piling up on each one.
+            Helps decide what to work on first — two different priorities: open lanes sales are still waiting
+            on (left), and lanes that keep coming back as unservable so they may deserve another push for a
+            vendor (right).
           </p>
           <div className="grid grid-cols-2 gap-6">
             <div>
               <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
               <p className="text-xs text-gray-400 mt-2">
-                Lanes that already have a Final Rate, but sales asked for a lower one because it didn't meet
-                their target. Still open — hasn't been resolved or closed yet. "Avg Target Rate" averages the
-                target across every sales request on that lane.
+                Still-open lanes that already have a Final Rate, but sales asked for a lower one because it
+                didn't meet their target. "Avg Target Rate" averages the target across every sales request on
+                that lane.
               </p>
             </div>
             <div>
-              <PrioritizationSection title="Missing lanes (no rate at all)" lanes={summary.missing_lanes} />
+              <PrioritizationSection title="Confirmed no vendor available" lanes={summary.missing_lanes} />
               <p className="text-xs text-gray-400 mt-2">
-                Lanes with no vendor cost in the master data at all — still open and waiting on a rate. This is
-                not the same as "no vendor available": once a lane is closed with that outcome, it drops off
-                this list (see the ticket's Discussion / status instead).
+                Lanes VM has already closed as "no vendor available" — accumulated by how many times that's
+                happened. A lane showing up here repeatedly is worth another vendor push or a rate re-check.
               </p>
             </div>
           </div>

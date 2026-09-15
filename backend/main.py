@@ -801,7 +801,7 @@ async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
         await cur.execute(
             """SELECT origin, destination, vehicle_type, COUNT(*) c
                FROM vm_requests
-               WHERE status IN ('open', 'in_progress') AND current_final_rate IS NULL
+               WHERE status = 'closed_no_vendor'
                GROUP BY origin, destination, vehicle_type
                ORDER BY c DESC LIMIT %s""",
             (limit,),

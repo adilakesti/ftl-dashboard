@@ -206,7 +206,7 @@
     },
     "/api/vm/summary": {
       "get": {
-        "summary": "VM: prioritization summary — open requests bucketed into 'seeking a lower rate' vs 'lane has no rate at all', ranked by request count. Default top 10 per bucket; pass a higher limit for the full list.",
+        "summary": "VM: prioritization summary — 'seeking_lower_rate' is still-open requests with an existing Final Rate the sales target didn't meet; 'missing_lanes' is lanes VM has already closed as closed_no_vendor, accumulated by how often that's happened. Both ranked by count; default top 10, pass a higher limit for the full list.",
         "parameters": [{ "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "default": 10, "minimum": 1, "maximum": 1000 } }],
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmSummary" } } } } }
       }
