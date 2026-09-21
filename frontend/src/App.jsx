@@ -1049,7 +1049,7 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
   };
 
   return (
-    <div className="bg-white border border-ink-200 rounded-lg p-4 mt-3">
+    <div className="bg-white rounded-xl shadow-2xl p-5">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold">
           {request.origin} → {request.destination} · {request.vehicle_type}
@@ -1346,7 +1346,14 @@ function VmView() {
           />
 
           {selected && (
-            <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
+            <div
+              className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center p-4 overflow-y-auto"
+              onClick={() => setSelectedId(null)}
+            >
+              <div className="w-full max-w-2xl my-8" onClick={(e) => e.stopPropagation()}>
+                <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
+              </div>
+            </div>
           )}
         </div>
       )}
