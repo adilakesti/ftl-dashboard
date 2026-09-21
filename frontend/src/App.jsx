@@ -15,13 +15,13 @@ class ErrorBoundary extends Component {
     if (this.state.error) {
       return (
         <div className="p-8">
-          <p className="font-medium text-gray-700 mb-2">Something went wrong.</p>
-          <p className="text-sm text-gray-500 mb-4">
+          <p className="font-medium text-ink-700 mb-2">Something went wrong.</p>
+          <p className="text-sm text-ink-500 mb-4">
             {this.state.error?.message || "An unexpected error occurred."}
           </p>
           <button
             onClick={() => window.location.reload()}
-            className="px-4 py-2 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+            className="px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
           >
             Reload
           </button>
@@ -69,10 +69,10 @@ function useMe() {
 }
 
 function Th({ children }) {
-  return <th className="text-left px-3 py-2 text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">{children}</th>;
+  return <th className="text-left px-3 py-2 text-xs font-semibold text-ink-500 uppercase whitespace-nowrap">{children}</th>;
 }
 function Td({ children, className = "" }) {
-  return <td className={`px-3 py-2 text-sm border-t border-gray-100 ${className}`}>{children}</td>;
+  return <td className={`px-3 py-2 text-sm border-t border-ink-100 ${className}`}>{children}</td>;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ function WizardSteps({ step }) {
         <div
           key={s.key}
           className={`flex-1 text-center text-xs font-medium uppercase py-2 rounded ${
-            i === idx ? "bg-gray-900 text-white" : i < idx ? "bg-gray-200 text-gray-500" : "bg-gray-100 text-gray-400"
+            i === idx ? "bg-brand-600 text-white" : i < idx ? "bg-gray-200 text-ink-500" : "bg-ink-100 text-ink-400"
           }`}
         >
           {i + 1}. {s.label}
@@ -161,21 +161,21 @@ function Discussion({ endpoint }) {
   };
 
   return (
-    <div className="mt-3 border-t border-gray-100 pt-3">
-      <p className="text-xs text-gray-500 uppercase font-semibold mb-2">Discussion</p>
+    <div className="mt-3 border-t border-ink-100 pt-3">
+      <p className="text-xs text-ink-500 uppercase font-semibold mb-2">Discussion</p>
       <div className="space-y-2 max-h-48 overflow-y-auto mb-2">
         {comments.map((c) => (
           <div key={c.id} className="text-sm">
             <span className="font-medium">{c.author_email}</span>{" "}
-            <span className="text-gray-400 text-xs">{c.created_at}</span>
-            <div className="text-gray-700">{c.message}</div>
+            <span className="text-ink-400 text-xs">{c.created_at}</span>
+            <div className="text-ink-700">{c.message}</div>
           </div>
         ))}
-        {loaded && comments.length === 0 && <p className="text-xs text-gray-400">No messages yet.</p>}
+        {loaded && comments.length === 0 && <p className="text-xs text-ink-400">No messages yet.</p>}
       </div>
       <div className="flex gap-2">
         <input
-          className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+          className="flex-1 border border-ink-200 rounded px-2 py-1 text-sm"
           placeholder="Write a message…"
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -186,7 +186,7 @@ function Discussion({ endpoint }) {
         <button
           onClick={send}
           disabled={sending}
-          className="text-xs px-3 py-1 rounded bg-gray-900 text-white hover:bg-gray-800"
+          className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700"
         >
           Send
         </button>
@@ -203,46 +203,46 @@ function ShipperTicketGroup({ shipperName, tickets }) {
   const submissionId = first.submission_id;
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-gray-50"
+        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-ink-50"
       >
         <span className="text-sm">
           <span className="font-semibold">{shipperName}</span>
-          {first.sales_pic && <span className="ml-2 text-xs text-gray-400">{first.sales_pic}</span>}
-          <span className="ml-2 text-xs text-gray-400">
+          {first.sales_pic && <span className="ml-2 text-xs text-ink-400">{first.sales_pic}</span>}
+          <span className="ml-2 text-xs text-ink-400">
             ({tickets.length} lane{tickets.length !== 1 ? "s" : ""})
           </span>
         </span>
-        <span className="text-xs text-gray-400">{expanded ? "Collapse" : "Expand"}</span>
+        <span className="text-xs text-ink-400">{expanded ? "Collapse" : "Expand"}</span>
       </button>
       {expanded && (
-        <div className="border-t border-gray-100 px-4 py-3">
+        <div className="border-t border-ink-100 px-4 py-3">
           {shipperName !== UNKNOWN_SHIPPER_SALES && (
-            <div className="grid grid-cols-3 gap-3 text-sm mb-4 pb-4 border-b border-gray-100">
+            <div className="grid grid-cols-3 gap-3 text-sm mb-4 pb-4 border-b border-ink-100">
               <div>
-                <span className="text-xs text-gray-400 block">Shipper</span>
+                <span className="text-xs text-ink-400 block">Shipper</span>
                 {first.shipper_name || "-"}
               </div>
               <div>
-                <span className="text-xs text-gray-400 block">Sales PIC</span>
+                <span className="text-xs text-ink-400 block">Sales PIC</span>
                 {first.sales_pic || "-"}
               </div>
               <div>
-                <span className="text-xs text-gray-400 block">Shipper Status</span>
+                <span className="text-xs text-ink-400 block">Shipper Status</span>
                 {first.shipper_status || "-"}
               </div>
               <div>
-                <span className="text-xs text-gray-400 block">Potential Monthly Revenue</span>
+                <span className="text-xs text-ink-400 block">Potential Monthly Revenue</span>
                 {fmt(first.potential_monthly_revenue)}
               </div>
               <div>
-                <span className="text-xs text-gray-400 block">Commodity</span>
+                <span className="text-xs text-ink-400 block">Commodity</span>
                 {first.commodity_type || "-"}
               </div>
               <div>
-                <span className="text-xs text-gray-400 block">High-value / Fragile</span>
+                <span className="text-xs text-ink-400 block">High-value / Fragile</span>
                 {first.high_value_fragile ? "Yes" : "No"}
               </div>
             </div>
@@ -314,7 +314,7 @@ function GlobalTicketsList({ tickets, emptyLabel }) {
   return (
     <div>
       <input
-        className="w-full border border-gray-300 rounded px-3 py-2 text-sm mb-4"
+        className="w-full border border-ink-200 rounded px-3 py-2 text-sm mb-4"
         placeholder="Search by shipper name or sales PIC…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -323,7 +323,7 @@ function GlobalTicketsList({ tickets, emptyLabel }) {
         {shipperNames.map((name) => (
           <ShipperTicketGroup key={name} shipperName={name} tickets={groups[name]} />
         ))}
-        {shipperNames.length === 0 && <p className="text-sm text-gray-400">{emptyLabel}</p>}
+        {shipperNames.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
       </div>
     </div>
   );
@@ -464,7 +464,7 @@ function SalesView() {
             key={t.key}
             onClick={() => setMainTab(t.key)}
             className={`px-4 py-2 rounded text-sm font-medium ${
-              mainTab === t.key ? "bg-gray-900 text-white" : "bg-white border border-gray-200 text-gray-600"
+              mainTab === t.key ? "bg-brand-600 text-white" : "bg-white border border-gray-200 text-gray-600"
             }`}
           >
             {t.label}
@@ -484,24 +484,24 @@ function SalesView() {
       <div className="w-64 shrink-0">
         <button
           onClick={startNew}
-          className="w-full mb-3 px-3 py-1.5 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+          className="w-full mb-3 px-3 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
         >
           + New submission
         </button>
-        <h3 className="text-sm font-semibold text-gray-500 uppercase mb-2">Submission history</h3>
+        <h3 className="text-sm font-semibold text-ink-500 uppercase mb-2">Submission history</h3>
         <ul className="space-y-1">
           {submissions.map((s) => (
             <li key={s.id}>
               <button
                 onClick={() => openSubmission(s.id)}
-                className="text-sm text-left w-full px-2 py-1.5 rounded hover:bg-gray-100"
+                className="text-sm text-left w-full px-2 py-1.5 rounded hover:bg-ink-100"
               >
                 <div className="truncate">{s.shipper_name || s.filename || `Submission #${s.id}`}</div>
-                <div className="text-xs text-gray-400">{s.created_at}</div>
+                <div className="text-xs text-ink-400">{s.created_at}</div>
               </button>
             </li>
           ))}
-          {submissions.length === 0 && <li className="text-sm text-gray-400">No submissions yet</li>}
+          {submissions.length === 0 && <li className="text-sm text-ink-400">No submissions yet</li>}
         </ul>
       </div>
 
@@ -510,30 +510,30 @@ function SalesView() {
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
 
         {step === "details" && (
-          <div className="bg-white rounded-lg border border-gray-200 p-4 space-y-6">
+          <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 space-y-6">
             <div>
               <h2 className="font-semibold mb-3">Shipper details</h2>
               <div className="grid grid-cols-3 gap-4">
                 <div>
-                  <label className="text-xs text-gray-500">Shipper Name *</label>
+                  <label className="text-xs text-ink-500">Shipper Name *</label>
                   <input
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.shipper_name}
                     onChange={(e) => setShipperForm((f) => ({ ...f, shipper_name: e.target.value }))}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">Sales PIC *</label>
+                  <label className="text-xs text-ink-500">Sales PIC *</label>
                   <input
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.sales_pic}
                     onChange={(e) => setShipperForm((f) => ({ ...f, sales_pic: e.target.value }))}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">New or Existing Shipper</label>
+                  <label className="text-xs text-ink-500">New or Existing Shipper</label>
                   <select
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.shipper_status}
                     onChange={(e) => setShipperForm((f) => ({ ...f, shipper_status: e.target.value }))}
                   >
@@ -542,25 +542,25 @@ function SalesView() {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">Potential Monthly Revenue (IDR)</label>
+                  <label className="text-xs text-ink-500">Potential Monthly Revenue (IDR)</label>
                   <input
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.potential_monthly_revenue}
                     onChange={(e) => setShipperForm((f) => ({ ...f, potential_monthly_revenue: e.target.value }))}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">Commodity / Item Type</label>
+                  <label className="text-xs text-ink-500">Commodity / Item Type</label>
                   <input
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.commodity_type}
                     onChange={(e) => setShipperForm((f) => ({ ...f, commodity_type: e.target.value }))}
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">High-value or Fragile?</label>
+                  <label className="text-xs text-ink-500">High-value or Fragile?</label>
                   <select
-                    className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
                     value={shipperForm.high_value_fragile ? "yes" : "no"}
                     onChange={(e) => setShipperForm((f) => ({ ...f, high_value_fragile: e.target.value === "yes" }))}
                   >
@@ -573,7 +573,7 @@ function SalesView() {
 
             <div>
               <h2 className="font-semibold mb-3">Add-ons</h2>
-              <p className="text-xs text-gray-400 mb-3">Recorded with the submission; doesn't change the computed Final Rate.</p>
+              <p className="text-xs text-ink-400 mb-3">Recorded with the submission; doesn't change the computed Final Rate.</p>
               <div className="space-y-2">
                 {addOns.map((a, i) => (
                   <label key={a.label} className="flex items-center gap-2 text-sm">
@@ -599,13 +599,13 @@ function SalesView() {
                   <div className="flex gap-3 pl-6">
                     <input
                       placeholder="Label"
-                      className="border border-gray-300 rounded px-2 py-1 text-sm"
+                      className="border border-ink-200 rounded px-2 py-1 text-sm"
                       value={customAddOn.label}
                       onChange={(e) => setCustomAddOn((c) => ({ ...c, label: e.target.value }))}
                     />
                     <input
                       placeholder="Value / notes (optional)"
-                      className="border border-gray-300 rounded px-2 py-1 text-sm"
+                      className="border border-ink-200 rounded px-2 py-1 text-sm"
                       value={customAddOn.value}
                       onChange={(e) => setCustomAddOn((c) => ({ ...c, value: e.target.value }))}
                     />
@@ -616,7 +616,7 @@ function SalesView() {
 
             <button
               onClick={goToLanes}
-              className="px-4 py-2 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+              className="px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
             >
               Continue to upload lanes
             </button>
@@ -624,21 +624,21 @@ function SalesView() {
         )}
 
         {step === "lanes" && (
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
             <h2 className="font-semibold mb-2">Upload rate request CSV</h2>
-            <p className="text-sm text-gray-500 mb-3">
+            <p className="text-sm text-ink-500 mb-3">
               Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
               <a
                 href={RATE_REQUEST_TEMPLATE_URL}
                 download="ftl_rate_request_template.csv"
-                className="text-blue-600 hover:underline"
+                className="text-brand-600 hover:underline"
               >
                 Download template
               </a>
             </p>
             <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
-            {uploading && <p className="text-sm text-gray-500 mt-2">Processing…</p>}
-            <button onClick={() => setStep("details")} className="block mt-4 text-sm text-gray-500 hover:underline">
+            {uploading && <p className="text-sm text-ink-500 mt-2">Processing…</p>}
+            <button onClick={() => setStep("details")} className="block mt-4 text-sm text-ink-500 hover:underline">
               ← Back to shipper details
             </button>
           </div>
@@ -650,13 +650,13 @@ function SalesView() {
               <div className="flex items-center justify-end mb-3">
                 <a
                   href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
-                  className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50"
+                  className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50"
                 >
                   Download quotation (Excel)
                 </a>
               </div>
 
-              <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+              <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr>
@@ -676,17 +676,17 @@ function SalesView() {
                         <Td>{row.destination}</Td>
                         <Td>{row.vehicle_type}</Td>
                         <Td>{fmt(row.target_rate)}</Td>
-                        <Td className={row.final_rate == null ? "text-gray-400" : "font-medium"}>
+                        <Td className={row.final_rate == null ? "text-ink-400" : "font-medium"}>
                           {fmt(row.final_rate)}
                         </Td>
-                        <Td className="text-gray-500">{row.remarks}</Td>
+                        <Td className="text-ink-500">{row.remarks}</Td>
                         <Td>
                           {requested[row.id] ? (
                             <span className="text-xs text-green-600">Requested</span>
                           ) : (
                             <button
                               onClick={() => requestVm(row)}
-                              className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50"
                             >
                               Request to VM
                             </button>
@@ -699,7 +699,7 @@ function SalesView() {
               </div>
             </div>
           ) : (
-            <div className="text-sm text-gray-400 mt-8">Upload a CSV, or pick a past submission, to see results.</div>
+            <div className="text-sm text-ink-400 mt-8">Upload a CSV, or pick a past submission, to see results.</div>
           ))}
       </div>
     </div>
@@ -761,41 +761,41 @@ function MasterRatesPanel() {
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4 mb-6">
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 mb-6">
       <h2 className="font-semibold mb-2">Master vendor rates</h2>
-      <p className="text-sm text-gray-500 mb-3">
+      <p className="text-sm text-ink-500 mb-3">
         Columns: Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name.{" "}
-        <a href={MASTER_RATE_TEMPLATE_URL} download="master_vendor_rate_template.csv" className="text-blue-600 hover:underline">
+        <a href={MASTER_RATE_TEMPLATE_URL} download="master_vendor_rate_template.csv" className="text-brand-600 hover:underline">
           Download template
         </a>
         . Uploads add/update rows — existing lanes not in the file are kept.
       </p>
       <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
-      {uploading && <p className="text-sm text-gray-500 mt-2">Processing…</p>}
+      {uploading && <p className="text-sm text-ink-500 mt-2">Processing…</p>}
       {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
       {ok && <p className="text-sm text-green-600 mt-2">{ok}</p>}
       {meta?.created_at ? (
-        <p className="text-xs text-gray-400 mt-3">
+        <p className="text-xs text-ink-400 mt-3">
           Last upload {meta.created_at} by {meta.uploaded_by} — {meta.row_count} row(s)
           {meta.filename ? ` (${meta.filename})` : ""}.
         </p>
       ) : (
-        <p className="text-xs text-gray-400 mt-3">No master rates loaded yet.</p>
+        <p className="text-xs text-ink-400 mt-3">No master rates loaded yet.</p>
       )}
 
-      <div className="mt-4 pt-4 border-t border-gray-100">
+      <div className="mt-4 pt-4 border-t border-ink-100">
         <div className="flex items-center justify-between">
-          <button onClick={() => setShowExisting((v) => !v)} className="text-sm text-blue-600 hover:underline">
+          <button onClick={() => setShowExisting((v) => !v)} className="text-sm text-brand-600 hover:underline">
             {showExisting ? "Hide" : "View"} existing vendor rates
           </button>
           {showExisting && (
-            <a href="/api/master-rates/export" className="text-sm px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50">
+            <a href="/api/master-rates/export" className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50">
               Download CSV
             </a>
           )}
         </div>
         {showExisting && (
-          <div className="mt-3 max-h-96 overflow-y-auto border border-gray-100 rounded">
+          <div className="mt-3 max-h-96 overflow-y-auto border border-ink-100 rounded">
             <table className="w-full">
               <thead className="sticky top-0 bg-white">
                 <tr>
@@ -815,12 +815,12 @@ function MasterRatesPanel() {
                     <Td>{r.vehicle_type}</Td>
                     <Td>{r.vendor_name}</Td>
                     <Td>{fmt(r.cost)}</Td>
-                    <Td className="text-gray-400 text-xs">{r.updated_by}</Td>
+                    <Td className="text-ink-400 text-xs">{r.updated_by}</Td>
                   </tr>
                 ))}
                 {rates.length === 0 && (
                   <tr>
-                    <Td className="text-gray-400" colSpan={6}>No vendor rates yet</Td>
+                    <Td className="text-ink-400" colSpan={6}>No vendor rates yet</Td>
                   </tr>
                 )}
               </tbody>
@@ -846,8 +846,8 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
   );
   return (
     <div className="mt-3 border border-gray-200 rounded">
-      <div className="flex justify-end p-2 border-b border-gray-100">
-        <button onClick={onClose} className="text-xs text-gray-500 hover:underline">
+      <div className="flex justify-end p-2 border-b border-ink-100">
+        <button onClick={onClose} className="text-xs text-ink-500 hover:underline">
           Collapse
         </button>
       </div>
@@ -864,7 +864,7 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
             <tr>
               <Td>
                 <input
-                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  className="w-full border border-ink-200 rounded px-1.5 py-1 text-xs"
                   placeholder="Filter…"
                   value={filters.origin}
                   onChange={(e) => setFilters((f) => ({ ...f, origin: e.target.value }))}
@@ -872,7 +872,7 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
               </Td>
               <Td>
                 <input
-                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  className="w-full border border-ink-200 rounded px-1.5 py-1 text-xs"
                   placeholder="Filter…"
                   value={filters.destination}
                   onChange={(e) => setFilters((f) => ({ ...f, destination: e.target.value }))}
@@ -880,7 +880,7 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
               </Td>
               <Td>
                 <input
-                  className="w-full border border-gray-300 rounded px-1.5 py-1 text-xs"
+                  className="w-full border border-ink-200 rounded px-1.5 py-1 text-xs"
                   placeholder="Filter…"
                   value={filters.vehicle_type}
                   onChange={(e) => setFilters((f) => ({ ...f, vehicle_type: e.target.value }))}
@@ -902,7 +902,7 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <Td className="text-gray-400" colSpan={showAvgTarget ? 5 : 4}>No matches</Td>
+                <Td className="text-ink-400" colSpan={showAvgTarget ? 5 : 4}>No matches</Td>
               </tr>
             )}
           </tbody>
@@ -926,7 +926,7 @@ function PrioritizationSection({ title, lanes, showAvgTarget }) {
   };
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-4">
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
       <h3 className="font-semibold mb-3">{title}</h3>
       {!expanded && (
         <>
@@ -952,13 +952,13 @@ function PrioritizationSection({ title, lanes, showAvgTarget }) {
               ))}
               {lanes.length === 0 && (
                 <tr>
-                  <Td className="text-gray-400" colSpan={showAvgTarget ? 5 : 4}>None</Td>
+                  <Td className="text-ink-400" colSpan={showAvgTarget ? 5 : 4}>None</Td>
                 </tr>
               )}
             </tbody>
           </table>
           {lanes.length >= 10 && (
-            <button onClick={viewMore} className="mt-2 text-sm text-blue-600 hover:underline">
+            <button onClick={viewMore} className="mt-2 text-sm text-brand-600 hover:underline">
               View more
             </button>
           )}
@@ -1049,31 +1049,31 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
   };
 
   return (
-    <div className="bg-white border border-gray-300 rounded-lg p-4 mt-3">
+    <div className="bg-white border border-ink-200 rounded-lg p-4 mt-3">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold">
           {request.origin} → {request.destination} · {request.vehicle_type}
         </h3>
-        <button onClick={onCancel} className="text-xs text-gray-500 hover:underline">Close</button>
+        <button onClick={onCancel} className="text-xs text-ink-500 hover:underline">Close</button>
       </div>
       {request.target_cost != null && (
-        <p className="text-sm text-gray-500 mb-3">Target cost to beat: <span className="font-medium">{fmt(request.target_cost)}</span></p>
+        <p className="text-sm text-ink-500 mb-3">Target cost to beat: <span className="font-medium">{fmt(request.target_cost)}</span></p>
       )}
 
       <div className="space-y-2 mb-3">
-        <p className="text-xs text-gray-500 uppercase font-semibold">Enter vendor cost(s)</p>
+        <p className="text-xs text-ink-500 uppercase font-semibold">Enter vendor cost(s)</p>
         {vendorRows.map((r, i) => (
           <div key={i} className="flex gap-2">
             <input
               placeholder="Vendor name"
-              className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+              className="flex-1 border border-ink-200 rounded px-2 py-1 text-sm"
               value={r.vendor_name}
               onChange={(e) => updateRow(i, "vendor_name", e.target.value)}
             />
             <input
               placeholder="Cost"
               type="number"
-              className="w-40 border border-gray-300 rounded px-2 py-1 text-sm"
+              className="w-40 border border-ink-200 rounded px-2 py-1 text-sm"
               value={r.cost}
               onChange={(e) => updateRow(i, "cost", e.target.value)}
             />
@@ -1082,7 +1082,7 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
             )}
           </div>
         ))}
-        <button onClick={addRow} className="text-xs text-blue-600 hover:underline">+ Add vendor</button>
+        <button onClick={addRow} className="text-xs text-brand-600 hover:underline">+ Add vendor</button>
       </div>
 
       {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
@@ -1091,12 +1091,12 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
         <button
           onClick={submitManual}
           disabled={busy}
-          className="px-3 py-1.5 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+          className="px-3 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
         >
           Save & Resolve
         </button>
-        <span className="text-xs text-gray-400">or</span>
-        <label className="text-sm text-blue-600 hover:underline cursor-pointer">
+        <span className="text-xs text-ink-400">or</span>
+        <label className="text-sm text-brand-600 hover:underline cursor-pointer">
           Upload CSV for this lane
           <input type="file" accept=".csv" className="hidden" onChange={submitCsv} disabled={busy} />
         </label>
@@ -1165,12 +1165,12 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
         const salesPic = rows[0].sales_pic || rows[0].requested_by;
         const openCount = rows.filter((r) => r.status === "open" || r.status === "in_progress").length;
         return (
-          <div key={name} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50">
+          <div key={name} className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2.5 hover:bg-ink-50">
               <button onClick={() => toggle(name)} className="flex-1 text-left">
                 <span className="font-semibold text-sm">{name}</span>
-                <span className="ml-2 text-xs text-gray-400">{salesPic}</span>
-                <span className="ml-2 text-xs text-gray-400">
+                <span className="ml-2 text-xs text-ink-400">{salesPic}</span>
+                <span className="ml-2 text-xs text-ink-400">
                   ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
                 </span>
                 {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
@@ -1179,17 +1179,17 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                 <button
                   onClick={() => resolveReady(name)}
                   disabled={resolving === name}
-                  className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 mr-3"
+                  className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 mr-3"
                 >
                   {resolving === name ? "Resolving…" : "Resolve all with existing rate"}
                 </button>
               )}
-              <button onClick={() => toggle(name)} className="text-xs text-gray-400">
+              <button onClick={() => toggle(name)} className="text-xs text-ink-400">
                 {isCollapsed ? "Expand" : "Collapse"}
               </button>
             </div>
             {!isCollapsed && (
-              <div className="overflow-x-auto border-t border-gray-100">
+              <div className="overflow-x-auto border-t border-ink-100">
                 <table className="w-full">
                   <thead>
                     <tr>
@@ -1206,11 +1206,11 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                   </thead>
                   <tbody>
                     {rows.map((r) => (
-                      <tr key={r.id} className={selectedId === r.id ? "bg-gray-50" : ""}>
+                      <tr key={r.id} className={selectedId === r.id ? "bg-ink-50" : ""}>
                         <Td>{r.origin}</Td>
                         <Td>{r.destination}</Td>
                         <Td>{r.vehicle_type}</Td>
-                        <Td className="text-gray-500">{r.requested_by}</Td>
+                        <Td className="text-ink-500">{r.requested_by}</Td>
                         <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
                         <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
                         <Td>{r.aging_days}</Td>
@@ -1218,7 +1218,7 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                           <select
                             value={r.status}
                             onChange={(e) => updateStatus(r.id, e.target.value)}
-                            className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                            className="text-xs border border-ink-200 rounded px-1 py-0.5"
                           >
                             {Object.entries(STATUS_LABEL).map(([v, l]) => (
                               <option key={v} value={v}>{l}</option>
@@ -1229,12 +1229,12 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                           {r.status === "open" || r.status === "in_progress" ? (
                             <button
                               onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
-                              className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50"
                             >
                               {selectedId === r.id ? "Cancel" : "Fill rate"}
                             </button>
                           ) : (
-                            <span className="text-xs text-gray-400">—</span>
+                            <span className="text-xs text-ink-400">—</span>
                           )}
                         </Td>
                       </tr>
@@ -1246,7 +1246,7 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
           </div>
         );
       })}
-      {shipperNames.length === 0 && <p className="text-sm text-gray-400">No requests yet</p>}
+      {shipperNames.length === 0 && <p className="text-sm text-ink-400">No requests yet</p>}
     </div>
   );
 }
@@ -1297,7 +1297,7 @@ function VmView() {
             key={t}
             onClick={() => setTab(t)}
             className={`px-3 py-1.5 rounded text-sm font-medium ${
-              tab === t ? "bg-gray-900 text-white" : "bg-white border border-gray-200 text-gray-600"
+              tab === t ? "bg-brand-600 text-white" : "bg-white border border-gray-200 text-gray-600"
             }`}
           >
             {t === "summary" ? "Prioritization" : "By Sales Request"}
@@ -1307,7 +1307,7 @@ function VmView() {
 
       {tab === "summary" && summary && (
         <div>
-          <p className="text-sm text-gray-500 mb-4">
+          <p className="text-sm text-ink-500 mb-4">
             Helps decide what to work on first — two different priorities: open lanes sales are still waiting
             on (left), and lanes that keep coming back as unservable so they may deserve another push for a
             vendor (right).
@@ -1315,7 +1315,7 @@ function VmView() {
           <div className="grid grid-cols-2 gap-6">
             <div>
               <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
-              <p className="text-xs text-gray-400 mt-2">
+              <p className="text-xs text-ink-400 mt-2">
                 Still-open lanes that already have a Final Rate, but sales asked for a lower one because it
                 didn't meet their target. "Avg Target Rate" averages the target across every sales request on
                 that lane.
@@ -1323,7 +1323,7 @@ function VmView() {
             </div>
             <div>
               <PrioritizationSection title="Confirmed no vendor available" lanes={summary.missing_lanes} />
-              <p className="text-xs text-gray-400 mt-2">
+              <p className="text-xs text-ink-400 mt-2">
                 Lanes VM has already closed as "no vendor available" — accumulated by how many times that's
                 happened. A lane showing up here repeatedly is worth another vendor push or a rate re-check.
               </p>
@@ -1411,24 +1411,24 @@ function AdminPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="bg-white rounded-lg border border-gray-200 p-4">
+      <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
         <h2 className="font-semibold mb-3">Add user</h2>
         <form onSubmit={addUser} className="flex gap-3 items-end">
           <div className="flex-1">
-            <label className="text-xs text-gray-500">Email</label>
+            <label className="text-xs text-ink-500">Email</label>
             <input
               type="email"
               required
-              className="mt-1 w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
               placeholder="name@ninjavan.co"
             />
           </div>
           <div>
-            <label className="text-xs text-gray-500">Role</label>
+            <label className="text-xs text-ink-500">Role</label>
             <select
-              className="mt-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+              className="mt-1 border border-ink-200 rounded px-2 py-1.5 text-sm"
               value={newRole}
               onChange={(e) => setNewRole(e.target.value)}
             >
@@ -1440,7 +1440,7 @@ function AdminPanel() {
           <button
             type="submit"
             disabled={saving}
-            className="px-4 py-1.5 rounded text-sm font-medium bg-gray-900 text-white hover:bg-gray-800"
+            className="px-4 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
           >
             Add
           </button>
@@ -1448,7 +1448,7 @@ function AdminPanel() {
         {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
       </div>
 
-      <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+      <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
         <table className="w-full">
           <thead>
             <tr>
@@ -1465,7 +1465,7 @@ function AdminPanel() {
                   <select
                     value={u.role}
                     onChange={(e) => changeRole(u.email, e.target.value)}
-                    className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                    className="text-xs border border-ink-200 rounded px-1 py-0.5"
                   >
                     <option value="sales">Sales</option>
                     <option value="vm">VM</option>
@@ -1481,7 +1481,7 @@ function AdminPanel() {
             ))}
             {users.length === 0 && (
               <tr>
-                <Td className="text-gray-400" colSpan={3}>No users yet</Td>
+                <Td className="text-ink-400" colSpan={3}>No users yet</Td>
               </tr>
             )}
           </tbody>
@@ -1495,24 +1495,35 @@ function AdminPanel() {
 // App shell
 // ---------------------------------------------------------------------------
 
+function BrandedMessage({ title, children }) {
+  return (
+    <div className="min-h-screen hero-gradient flex items-center justify-center p-6">
+      <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+        <img src="/assets/ryo.png" alt="Ryo" className="h-24 mx-auto mb-3" />
+        <p className="font-bold text-lg text-ink-900 mb-1">{title}</p>
+        <div className="text-sm text-ink-500">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+const VIEW_LABEL = { sales: "Sales", vm: "Vendor Mgmt", admin: "Admin" };
+
 function AppInner() {
   const { me, loading } = useMe();
   const [view, setView] = useState("sales");
 
-  if (loading) return <div className="p-8 text-gray-400">Loading…</div>;
+  if (loading) return <BrandedMessage title="Loading…">Warming up the trucks.</BrandedMessage>;
 
   if (!me?.email) {
-    return <div className="p-8 text-gray-500">Sign in required.</div>;
+    return <BrandedMessage title="Sign in required">Please sign in with your company Google account.</BrandedMessage>;
   }
 
   if (!me.role) {
     return (
-      <div className="p-8 text-gray-500">
-        <p className="font-medium text-gray-700">Not provisioned</p>
-        <p className="text-sm mt-1">
-          {me.email} isn't set up as sales or vendor management yet. Ask an admin to add you.
-        </p>
-      </div>
+      <BrandedMessage title="Not provisioned">
+        {me.email} isn't set up as sales or vendor management yet. Ask an admin to add you.
+      </BrandedMessage>
     );
   }
 
@@ -1520,38 +1531,71 @@ function AppInner() {
   const activeView = isSuperadmin ? view : me.role;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="bg-amber-500 text-white text-center text-xs font-semibold uppercase tracking-wide py-1.5">
-        FTL On-Call Only
+    <div className="min-h-screen bg-ink-50">
+      <div className="bg-ink-900 text-white text-center text-[11px] font-bold uppercase tracking-[0.2em] py-1.5">
+        <span className="text-brand-400">●</span> FTL On-Call Only
       </div>
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="font-semibold">FTL Pricing Dashboard</h1>
-          {isSuperadmin && (
-            <div className="flex gap-1">
-              {["sales", "vm", "admin"].map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`px-2.5 py-1 rounded text-xs font-medium uppercase ${
-                    activeView === v ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-500"
-                  }`}
-                >
-                  {v}
-                </button>
-              ))}
+
+      <header className="hero-gradient relative overflow-hidden text-white">
+        <div className="max-w-6xl mx-auto px-6 pt-5 pb-9 flex items-end justify-between gap-6 relative z-10">
+          <div className="flex items-center gap-4">
+            <div className="bg-white rounded-2xl p-1.5 shadow-lg shrink-0">
+              <img src="/assets/ryo.png" alt="Ryo" className="h-16" />
             </div>
-          )}
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-white/80">Ninja Xpress</p>
+              <h1 className="text-2xl font-extrabold leading-tight">FTL Pricing Dashboard</h1>
+              <p className="text-sm text-white/80">Full-truckload rate requests, from quote to vendor.</p>
+            </div>
+          </div>
+          <div className="hidden md:flex items-end gap-2 shrink-0">
+            <img src="/assets/van-2.png" alt="" className="h-16 ryo-blend opacity-95" />
+            <img src="/assets/truck.png" alt="" className="h-20 ryo-blend" />
+          </div>
         </div>
-        <div className="text-sm text-gray-500">
-          {me.email} <span className="ml-2 px-2 py-0.5 rounded bg-gray-100 text-xs uppercase">{me.role}</span>
+
+        <div className="absolute -right-10 -top-10 h-44 w-44 rounded-full bg-white/10" />
+        <div className="absolute right-40 -bottom-16 h-40 w-40 rounded-full bg-black/10" />
+
+        <div className="bg-black/25 backdrop-blur-sm relative z-10">
+          <div className="max-w-6xl mx-auto px-6 py-2 flex items-center justify-between">
+            <div className="flex gap-1">
+              {isSuperadmin ? (
+                ["sales", "vm", "admin"].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide transition ${
+                      activeView === v ? "bg-white text-brand-700 shadow" : "text-white/85 hover:bg-white/15"
+                    }`}
+                  >
+                    {VIEW_LABEL[v]}
+                  </button>
+                ))
+              ) : (
+                <span className="px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide bg-white text-brand-700">
+                  {VIEW_LABEL[activeView]}
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-white/85">
+              {me.email}
+              <span className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold uppercase">{me.role}</span>
+            </div>
+          </div>
         </div>
       </header>
+
       <main className="p-6 max-w-6xl mx-auto">
         {activeView === "sales" && <SalesView />}
         {activeView === "vm" && <VmView />}
         {activeView === "admin" && <AdminPanel />}
       </main>
+
+      <footer className="max-w-6xl mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
+        <span>PRIVATE AND CONFIDENTIAL</span>
+        <img src="/assets/van.png" alt="" className="h-10 ryo-blend opacity-80" />
+      </footer>
     </div>
   );
 }

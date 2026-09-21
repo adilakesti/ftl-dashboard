@@ -1,3 +1,16 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+body {
+  background: #f7f5f5;
+  color: #1c1919;
+}
+
+.hero-gradient {
+  background: linear-gradient(180deg, #ff8f86 0%, #e0192d 22%, #c8001f 55%, #8a0f1c 100%);
+}
+
+.ryo-blend {
+  mix-blend-mode: multiply;
+}
