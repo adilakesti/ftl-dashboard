@@ -1499,7 +1499,7 @@ function BrandedMessage({ title, children }) {
   return (
     <div className="min-h-screen hero-gradient flex items-center justify-center p-6">
       <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
-        <img src="/assets/ryo.png" alt="Ryo" className="h-24 mx-auto mb-3" />
+        <img src="/assets/ryo-standing.png" alt="Ryo" className="h-28 mx-auto mb-3" />
         <p className="font-bold text-lg text-ink-900 mb-1">{title}</p>
         <div className="text-sm text-ink-500">{children}</div>
       </div>
@@ -1539,18 +1539,16 @@ function AppInner() {
       <header className="hero-gradient relative overflow-hidden text-white">
         <div className="max-w-6xl mx-auto px-6 pt-5 pb-9 flex items-end justify-between gap-6 relative z-10">
           <div className="flex items-center gap-4">
-            <div className="bg-white rounded-2xl p-1.5 shadow-lg shrink-0">
-              <img src="/assets/ryo.png" alt="Ryo" className="h-16" />
-            </div>
+            <img src="/assets/ryo-standing.png" alt="Ryo" className="h-24 shrink-0 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-white/80">Ninja Xpress</p>
               <h1 className="text-2xl font-extrabold leading-tight">FTL Pricing Dashboard</h1>
               <p className="text-sm text-white/80">Full-truckload rate requests, from quote to vendor.</p>
             </div>
           </div>
-          <div className="hidden md:flex items-center gap-1 shrink-0 bg-white rounded-2xl px-3 py-2 shadow-lg">
-            <img src="/assets/van-2.png" alt="" className="h-16" />
-            <img src="/assets/truck.png" alt="" className="h-16" />
+          <div className="hidden md:flex items-end gap-2 shrink-0">
+            <img src="/assets/ryo-jump.png" alt="" className="h-20 -mb-1 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
+            <img src="/assets/truck-ninjavan.png" alt="" className="h-24 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
           </div>
         </div>
 
@@ -1594,7 +1592,7 @@ function AppInner() {
 
       <footer className="max-w-6xl mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
         <span>PRIVATE AND CONFIDENTIAL</span>
-        <img src="/assets/van.png" alt="" className="h-10 ryo-blend opacity-80" />
+        <img src="/assets/truck-ninjavan.png" alt="" className="h-9 opacity-80" />
       </footer>
     </div>
   );
