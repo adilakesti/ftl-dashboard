@@ -1548,9 +1548,9 @@ function AppInner() {
               <p className="text-sm text-white/80">Full-truckload rate requests, from quote to vendor.</p>
             </div>
           </div>
-          <div className="hidden md:flex items-end gap-2 shrink-0">
-            <img src="/assets/van-2.png" alt="" className="h-16 ryo-blend opacity-95" />
-            <img src="/assets/truck.png" alt="" className="h-20 ryo-blend" />
+          <div className="hidden md:flex items-center gap-1 shrink-0 bg-white rounded-2xl px-3 py-2 shadow-lg">
+            <img src="/assets/van-2.png" alt="" className="h-16" />
+            <img src="/assets/truck.png" alt="" className="h-16" />
           </div>
         </div>
 
