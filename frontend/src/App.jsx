@@ -1333,27 +1333,24 @@ function VmView() {
       )}
 
       {tab === "requests" && (
-        <div>
-          <RequestsByShipper
-            requests={requests}
-            selectedId={selectedId}
-            setSelectedId={setSelectedId}
-            updateStatus={updateStatus}
-            onRefresh={() => {
-              loadRequests();
-              loadSummary();
-            }}
-          />
+        <div className="flex gap-5 items-start">
+          <div className="flex-1 min-w-0">
+            <RequestsByShipper
+              requests={requests}
+              selectedId={selectedId}
+              setSelectedId={setSelectedId}
+              updateStatus={updateStatus}
+              onRefresh={() => {
+                loadRequests();
+                loadSummary();
+              }}
+            />
+          </div>
 
           {selected && (
-            <div
-              className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center p-4 overflow-y-auto"
-              onClick={() => setSelectedId(null)}
-            >
-              <div className="w-full max-w-2xl my-8" onClick={(e) => e.stopPropagation()}>
-                <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
-              </div>
-            </div>
+            <aside className="w-[440px] shrink-0 sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+              <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
+            </aside>
           )}
         </div>
       )}
@@ -1591,13 +1588,13 @@ function AppInner() {
         </div>
       </header>
 
-      <main className="p-6 max-w-6xl mx-auto">
+      <main className="p-6 max-w-[1400px] mx-auto">
         {activeView === "sales" && <SalesView />}
         {activeView === "vm" && <VmView />}
         {activeView === "admin" && <AdminPanel />}
       </main>
 
-      <footer className="max-w-6xl mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
+      <footer className="max-w-[1400px] mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
         <span>PRIVATE AND CONFIDENTIAL</span>
         <img src="/assets/truck-ninjavan.png" alt="" className="h-9 opacity-80" />
       </footer>
