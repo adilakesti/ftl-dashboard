@@ -1110,7 +1110,7 @@ function MasterRatesPanel() {
 // VM: prioritization (with view-more + per-column filters)
 // ---------------------------------------------------------------------------
 
-function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
+function LaneFilterTable({ lanes, onClose, showAvgTarget, hideCollapse }) {
   const [filters, setFilters] = useState({ origin: "", destination: "", vehicle_type: "" });
   const filtered = lanes.filter(
     (l) =>
@@ -1119,12 +1119,14 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
       l.vehicle_type.toLowerCase().includes(filters.vehicle_type.toLowerCase())
   );
   return (
-    <div className="mt-3 border border-gray-200 rounded">
-      <div className="flex justify-end p-2 border-b border-ink-100">
-        <button onClick={onClose} className="text-xs text-ink-500 hover:underline">
-          Collapse
-        </button>
-      </div>
+    <div className={hideCollapse ? "" : "mt-3 border border-gray-200 rounded"}>
+      {!hideCollapse && (
+        <div className="flex justify-end p-2 border-b border-ink-100">
+          <button onClick={onClose} className="text-xs text-ink-500 hover:underline">
+            Collapse
+          </button>
+        </div>
+      )}
       <div className="max-h-96 overflow-y-auto">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-white">
@@ -1186,61 +1188,68 @@ function LaneFilterTable({ lanes, onClose, showAvgTarget }) {
   );
 }
 
-function PrioritizationSection({ title, lanes, showAvgTarget }) {
-  const [expanded, setExpanded] = useState(false);
-  const [fullLanes, setFullLanes] = useState(null);
-
-  const viewMore = async () => {
-    if (!fullLanes) {
-      const key = title === "Seeking a lower rate" ? "seeking_lower_rate" : "missing_lanes";
-      const d = await fetch("/api/vm/summary?limit=500").then((r) => r.json());
-      setFullLanes(d[key]);
-    }
-    setExpanded(true);
-  };
-
+function PrioritizationSection({ title, lanes, showAvgTarget, onViewMore, lanesKey }) {
   return (
     <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
       <h3 className="font-semibold mb-3">{title}</h3>
-      {!expanded && (
-        <>
-          <table className="w-full text-sm">
-            <thead>
-              <tr>
-                <Th>Origin</Th>
-                <Th>Destination</Th>
-                <Th>Vehicle</Th>
-                <Th>Requests</Th>
-                {showAvgTarget && <Th>Avg Target Rate</Th>}
-              </tr>
-            </thead>
-            <tbody>
-              {lanes.slice(0, 10).map((l, i) => (
-                <tr key={i}>
-                  <Td>{l.origin}</Td>
-                  <Td>{l.destination}</Td>
-                  <Td>{l.vehicle_type}</Td>
-                  <Td>{l.request_count}</Td>
-                  {showAvgTarget && <Td>{l.avg_target_rate != null ? fmt(l.avg_target_rate) : "-"}</Td>}
-                </tr>
-              ))}
-              {lanes.length === 0 && (
-                <tr>
-                  <Td className="text-ink-400" colSpan={showAvgTarget ? 5 : 4}>None</Td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-          {lanes.length >= 10 && (
-            <button onClick={viewMore} className="mt-2 text-sm text-brand-600 hover:underline">
-              View more
-            </button>
+      <table className="w-full text-sm">
+        <thead>
+          <tr>
+            <Th>Origin</Th>
+            <Th>Destination</Th>
+            <Th>Vehicle</Th>
+            <Th>Requests</Th>
+            {showAvgTarget && <Th>Avg Target Rate</Th>}
+          </tr>
+        </thead>
+        <tbody>
+          {lanes.slice(0, 10).map((l, i) => (
+            <tr key={i}>
+              <Td>{l.origin}</Td>
+              <Td>{l.destination}</Td>
+              <Td>{l.vehicle_type}</Td>
+              <Td>{l.request_count}</Td>
+              {showAvgTarget && <Td>{l.avg_target_rate != null ? fmt(l.avg_target_rate) : "-"}</Td>}
+            </tr>
+          ))}
+          {lanes.length === 0 && (
+            <tr>
+              <Td className="text-ink-400" colSpan={showAvgTarget ? 5 : 4}>None</Td>
+            </tr>
           )}
-        </>
+        </tbody>
+      </table>
+      {lanes.length >= 10 && (
+        <button onClick={() => onViewMore(lanesKey, title)} className="mt-2 text-sm text-brand-600 hover:underline">
+          View more
+        </button>
       )}
-      {expanded && fullLanes && (
-        <LaneFilterTable lanes={fullLanes} onClose={() => setExpanded(false)} showAvgTarget={showAvgTarget} />
-      )}
+    </div>
+  );
+}
+
+function PrioritizationFullPage({ lanesKey, title, showAvgTarget, onBack }) {
+  const [lanes, setLanes] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/vm/summary?limit=500")
+      .then((r) => r.json())
+      .then((d) => setLanes(d[lanesKey]));
+  }, [lanesKey]);
+
+  return (
+    <div>
+      <button onClick={onBack} className="text-sm text-ink-500 hover:underline mb-3">
+        ← Back to Prioritization
+      </button>
+      <h2 className="font-semibold text-lg mb-3">{title}</h2>
+      <div className="bg-white rounded-xl border border-ink-100 shadow-sm">
+        {lanes ? (
+          <LaneFilterTable lanes={lanes} onClose={onBack} showAvgTarget={showAvgTarget} hideCollapse />
+        ) : (
+          <p className="text-sm text-ink-400 p-4">Loading…</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -1582,6 +1591,7 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   const [requests, setRequests] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [views, setViews] = useState({});
+  const [prioritizationView, setPrioritizationView] = useState(null); // null | { key, title }
 
   const loadSummary = () => fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
   const loadRequests = () => fetch("/api/vm/requests").then((r) => r.json()).then((d) => setRequests(d.requests));
@@ -1597,7 +1607,11 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   }, []);
 
   useEffect(() => {
-    if (focusSubmissionId) setTab("requests");
+    if (!focusSubmissionId) return;
+    const isCompleted = requests.some(
+      (r) => r.submission_id === focusSubmissionId && (r.status === "resolved" || r.status === "closed_no_vendor")
+    );
+    setTab(isCompleted ? "completed" : "active");
   }, [focusSubmissionId]);
 
   const onViewed = (submissionId) => {
@@ -1628,51 +1642,79 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
       <MasterRatesPanel />
 
       <div className="flex gap-2 mb-4">
-        {["summary", "requests"].map((t) => (
+        {[
+          { key: "summary", label: "Prioritization" },
+          { key: "active", label: "Active Request" },
+          { key: "completed", label: "Completed Request" },
+        ].map((t) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={t.key}
+            onClick={() => setTab(t.key)}
             className={`px-3 py-1.5 rounded text-sm font-medium ${
-              tab === t ? "bg-brand-600 text-white" : "bg-white border border-gray-200 text-gray-600"
+              tab === t.key ? "bg-brand-600 text-white" : "bg-white border border-gray-200 text-gray-600"
             }`}
           >
-            {t === "summary" ? "Prioritization" : "By Sales Request"}
+            {t.label}
           </button>
         ))}
       </div>
 
       {tab === "summary" && summary && (
-        <div>
-          <p className="text-sm text-ink-500 mb-4">
-            Helps decide what to work on first — two different priorities: open lanes sales are still waiting
-            on (left), and lanes that keep coming back as unservable so they may deserve another push for a
-            vendor (right).
-          </p>
-          <div className="grid grid-cols-2 gap-6">
-            <div>
-              <PrioritizationSection title="Seeking a lower rate" lanes={summary.seeking_lower_rate} showAvgTarget />
-              <p className="text-xs text-ink-400 mt-2">
-                Still-open lanes that already have a Final Rate, but sales asked for a lower one because it
-                didn't meet their target. "Avg Target Rate" averages the target across every sales request on
-                that lane.
-              </p>
-            </div>
-            <div>
-              <PrioritizationSection title="Confirmed no vendor available" lanes={summary.missing_lanes} />
-              <p className="text-xs text-ink-400 mt-2">
-                Lanes VM has already closed as "no vendor available" — accumulated by how many times that's
-                happened. A lane showing up here repeatedly is worth another vendor push or a rate re-check.
-              </p>
+        prioritizationView ? (
+          <PrioritizationFullPage
+            lanesKey={prioritizationView.key}
+            title={prioritizationView.title}
+            showAvgTarget={prioritizationView.key === "seeking_lower_rate"}
+            onBack={() => setPrioritizationView(null)}
+          />
+        ) : (
+          <div>
+            <p className="text-sm text-ink-500 mb-4">
+              Helps decide what to work on first — two different priorities: open lanes sales are still waiting
+              on (left), and lanes that keep coming back as unservable so they may deserve another push for a
+              vendor (right).
+            </p>
+            <div className="grid grid-cols-2 gap-6">
+              <div>
+                <PrioritizationSection
+                  title="Seeking a lower rate"
+                  lanes={summary.seeking_lower_rate}
+                  showAvgTarget
+                  lanesKey="seeking_lower_rate"
+                  onViewMore={(key, title) => setPrioritizationView({ key, title })}
+                />
+                <p className="text-xs text-ink-400 mt-2">
+                  Still-open lanes that already have a Final Rate, but sales asked for a lower one because it
+                  didn't meet their target. "Avg Target Rate" averages the target across every sales request on
+                  that lane.
+                </p>
+              </div>
+              <div>
+                <PrioritizationSection
+                  title="Confirmed no vendor available"
+                  lanes={summary.missing_lanes}
+                  lanesKey="missing_lanes"
+                  onViewMore={(key, title) => setPrioritizationView({ key, title })}
+                />
+                <p className="text-xs text-ink-400 mt-2">
+                  Lanes VM has already closed as "no vendor available" — accumulated by how many times that's
+                  happened. A lane showing up here repeatedly is worth another vendor push or a rate re-check.
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+        )
       )}
 
-      {tab === "requests" && (
+      {(tab === "active" || tab === "completed") && (
         <div className="flex gap-5 items-start">
           <div className="flex-1 min-w-0">
             <RequestsByShipper
-              requests={requests}
+              requests={requests.filter((r) =>
+                tab === "active"
+                  ? r.status === "open" || r.status === "in_progress"
+                  : r.status === "resolved" || r.status === "closed_no_vendor"
+              )}
               selectedId={selectedId}
               setSelectedId={setSelectedId}
               updateStatus={updateStatus}
