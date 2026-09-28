@@ -1576,7 +1576,7 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
       </div>
 
       <p className="mt-3 text-xs text-ink-400">
-        Discussion for this shipper is on the request list below — collapse this panel and expand the shipper group.
+        Click "💬 Discussion" on this shipper's row to switch this panel to their discussion thread.
       </p>
     </div>
   );
