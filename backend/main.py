@@ -943,6 +943,7 @@ async def my_tickets(request: Request):
 class LaneItem(BaseModel):
     id: int
     submission_id: int
+    submitted_at: str
     shipper_name: str | None
     sales_pic: str | None
     origin: str
@@ -974,7 +975,7 @@ async def my_lanes(request: Request):
         await cur.execute(
             """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
                       sr.vehicle_type, sr.target_rate, sr.final_rate, sr.remarks, sr.matched_vendor,
-                      vr.status, vr.id, vr.created_at
+                      vr.status, vr.id, vr.created_at, s.created_at
                FROM submission_rows sr
                JOIN submissions s ON sr.submission_id = s.id
                LEFT JOIN vm_requests vr ON vr.id = (
@@ -999,6 +1000,7 @@ async def my_lanes(request: Request):
             LaneItem(
                 id=r[0],
                 submission_id=r[1],
+                submitted_at=str(r[14]),
                 shipper_name=r[2],
                 sales_pic=r[3],
                 origin=r[4],

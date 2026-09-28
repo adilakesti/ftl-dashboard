@@ -207,6 +207,7 @@ function LaneSubmissionGroup({ lanes, kind }) {
           <table className="w-full mb-1">
             <thead>
               <tr>
+                <Th>Submitted</Th>
                 <Th>Origin</Th>
                 <Th>Destination</Th>
                 <Th>Vehicle</Th>
@@ -219,6 +220,7 @@ function LaneSubmissionGroup({ lanes, kind }) {
             <tbody>
               {lanes.map((l) => (
                 <tr key={l.id}>
+                  <Td className="text-ink-500 whitespace-nowrap">{l.submitted_at}</Td>
                   <Td>{l.origin}</Td>
                   <Td>{l.destination}</Td>
                   <Td>{l.vehicle_type}</Td>
