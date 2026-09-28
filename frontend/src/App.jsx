@@ -90,30 +90,6 @@ const DEFAULT_SHIPPER_FORM = {
 
 const PREDEFINED_ADD_ONS = ["Multi-drop (extra stop)", "Waiting time charge", "Insurance"];
 
-const WIZARD_STEPS = [
-  { key: "details", label: "Shipper details" },
-  { key: "lanes", label: "Upload lanes" },
-  { key: "result", label: "Result" },
-];
-
-function WizardSteps({ step }) {
-  const idx = WIZARD_STEPS.findIndex((s) => s.key === step);
-  return (
-    <div className="flex gap-1 mb-6">
-      {WIZARD_STEPS.map((s, i) => (
-        <div
-          key={s.key}
-          className={`flex-1 text-center text-xs font-medium uppercase py-2 rounded ${
-            i === idx ? "bg-brand-600 text-white" : i < idx ? "bg-gray-200 text-ink-500" : "bg-ink-100 text-ink-400"
-          }`}
-        >
-          {i + 1}. {s.label}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function Discussion({ endpoint }) {
   const [comments, setComments] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -329,19 +305,54 @@ function GlobalTicketsList({ tickets, emptyLabel }) {
   );
 }
 
+const CSV_ALIASES = {
+  "l2 origin": "origin",
+  "origin": "origin",
+  "l2 destinasi": "destination",
+  "l2 destination": "destination",
+  "destination": "destination",
+  "vehicle type": "vehicle_type",
+  "target rate": "target_rate",
+};
+
+function parseCsvPreview(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length === 0) return [];
+  const header = lines[0].split(",").map((h) => h.trim());
+  const colmap = {};
+  header.forEach((h, i) => {
+    const key = CSV_ALIASES[h.toLowerCase()];
+    if (key) colmap[i] = key;
+  });
+  return lines
+    .slice(1)
+    .map((line) => {
+      const cells = line.split(",");
+      const row = {};
+      Object.entries(colmap).forEach(([i, key]) => {
+        row[key] = (cells[Number(i)] || "").trim();
+      });
+      return row;
+    })
+    .filter((r) => r.origin && r.destination && r.vehicle_type);
+}
+
 function SalesView() {
   const [mainTab, setMainTab] = useState("new");
   const [submissions, setSubmissions] = useState([]);
-  const [active, setActive] = useState(null); // {submission, rows}
+  const [active, setActive] = useState(null); // {submission, rows} — set once "Check Result" runs
   const [globalTickets, setGlobalTickets] = useState([]);
-  const [uploading, setUploading] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState(null);
   const [requested, setRequested] = useState({});
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkRequesting, setBulkRequesting] = useState(false);
 
-  const [step, setStep] = useState("details");
   const [shipperForm, setShipperForm] = useState(DEFAULT_SHIPPER_FORM);
   const [addOns, setAddOns] = useState(PREDEFINED_ADD_ONS.map((label) => ({ label, checked: false })));
   const [customAddOn, setCustomAddOn] = useState({ checked: false, label: "", value: "" });
+  const [file, setFile] = useState(null);
+  const [previewRows, setPreviewRows] = useState([]);
 
   const loadSubmissions = () => {
     fetch("/api/submissions")
@@ -366,23 +377,34 @@ function SalesView() {
     setShipperForm(DEFAULT_SHIPPER_FORM);
     setAddOns(PREDEFINED_ADD_ONS.map((label) => ({ label, checked: false })));
     setCustomAddOn({ checked: false, label: "", value: "" });
+    setFile(null);
+    setPreviewRows([]);
+    setSelectedIds(new Set());
     setError(null);
-    setStep("details");
   };
 
-  const goToLanes = () => {
+  const onFileChange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    setActive(null);
+    setSelectedIds(new Set());
+    setFile(f);
+    setError(null);
+    const reader = new FileReader();
+    reader.onload = () => setPreviewRows(parseCsvPreview(String(reader.result || "")));
+    reader.readAsText(f);
+  };
+
+  const checkResult = async () => {
     if (!shipperForm.shipper_name.trim() || !shipperForm.sales_pic.trim()) {
       setError("Shipper Name and Sales PIC are required");
       return;
     }
-    setError(null);
-    setStep("lanes");
-  };
-
-  const onUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setUploading(true);
+    if (!file) {
+      setError("Upload a lanes CSV first");
+      return;
+    }
+    setChecking(true);
     setError(null);
     try {
       const selectedAddOns = [
@@ -410,14 +432,13 @@ function SalesView() {
       const data = await res.json();
       setActive(data);
       setRequested({});
-      setStep("result");
+      setSelectedIds(new Set());
       loadSubmissions();
       loadGlobalTickets();
     } catch (err) {
       setError(err.message);
     } finally {
-      setUploading(false);
-      e.target.value = "";
+      setChecking(false);
     }
   };
 
@@ -428,7 +449,9 @@ function SalesView() {
       .then((d) => {
         setActive(d);
         setRequested({});
-        setStep("result");
+        setSelectedIds(new Set());
+        setFile(null);
+        setPreviewRows([]);
       });
   };
 
@@ -446,7 +469,41 @@ function SalesView() {
       }),
     });
     setRequested((r) => ({ ...r, [row.id]: true }));
-    loadGlobalTickets();
+  };
+
+  const toggleRow = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectableRows = active ? active.rows.filter((r) => !requested[r.id]) : [];
+  const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selectedIds.has(r.id));
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectableRows.map((r) => r.id)));
+    }
+  };
+
+  const raiseSelected = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkRequesting(true);
+    try {
+      const rows = active.rows.filter((r) => selectedIds.has(r.id));
+      for (const row of rows) {
+        await requestVm(row);
+      }
+      setSelectedIds(new Set());
+      loadGlobalTickets();
+    } finally {
+      setBulkRequesting(false);
+    }
   };
 
   const activeTickets = globalTickets.filter((t) => t.status === "open" || t.status === "in_progress");
@@ -480,182 +537,164 @@ function SalesView() {
       )}
 
       {mainTab === "new" && (
-    <div className="flex gap-6">
-      <div className="w-64 shrink-0">
-        <button
-          onClick={startNew}
-          className="w-full mb-3 px-3 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
-        >
-          + New submission
-        </button>
-        <h3 className="text-sm font-semibold text-ink-500 uppercase mb-2">Submission history</h3>
-        <ul className="space-y-1">
-          {submissions.map((s) => (
-            <li key={s.id}>
-              <button
-                onClick={() => openSubmission(s.id)}
-                className="text-sm text-left w-full px-2 py-1.5 rounded hover:bg-ink-100"
-              >
-                <div className="truncate">{s.shipper_name || s.filename || `Submission #${s.id}`}</div>
-                <div className="text-xs text-ink-400">{s.created_at}</div>
-              </button>
-            </li>
-          ))}
-          {submissions.length === 0 && <li className="text-sm text-ink-400">No submissions yet</li>}
-        </ul>
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <WizardSteps step={step} />
-        {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
-
-        {step === "details" && (
-          <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 space-y-6">
-            <div>
-              <h2 className="font-semibold mb-3">Shipper details</h2>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="text-xs text-ink-500">Shipper Name *</label>
-                  <input
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.shipper_name}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, shipper_name: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-ink-500">Sales PIC *</label>
-                  <input
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.sales_pic}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, sales_pic: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-ink-500">New or Existing Shipper</label>
-                  <select
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.shipper_status}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, shipper_status: e.target.value }))}
+        <div className="flex gap-6">
+          <div className="w-64 shrink-0">
+            <button
+              onClick={startNew}
+              className="w-full mb-3 px-3 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
+            >
+              + New submission
+            </button>
+            <h3 className="text-sm font-semibold text-ink-500 uppercase mb-2">Submission history</h3>
+            <ul className="space-y-1">
+              {submissions.map((s) => (
+                <li key={s.id}>
+                  <button
+                    onClick={() => openSubmission(s.id)}
+                    className="text-sm text-left w-full px-2 py-1.5 rounded hover:bg-ink-100"
                   >
-                    <option value="new">New</option>
-                    <option value="existing">Existing</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-ink-500">Potential Monthly Revenue (IDR)</label>
-                  <input
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.potential_monthly_revenue}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, potential_monthly_revenue: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-ink-500">Commodity / Item Type</label>
-                  <input
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.commodity_type}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, commodity_type: e.target.value }))}
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-ink-500">High-value or Fragile?</label>
-                  <select
-                    className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                    value={shipperForm.high_value_fragile ? "yes" : "no"}
-                    onChange={(e) => setShipperForm((f) => ({ ...f, high_value_fragile: e.target.value === "yes" }))}
-                  >
-                    <option value="no">No</option>
-                    <option value="yes">Yes</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+                    <div className="truncate">{s.shipper_name || s.filename || `Submission #${s.id}`}</div>
+                    <div className="text-xs text-ink-400">{s.created_at}</div>
+                  </button>
+                </li>
+              ))}
+              {submissions.length === 0 && <li className="text-sm text-ink-400">No submissions yet</li>}
+            </ul>
+          </div>
 
-            <div>
-              <h2 className="font-semibold mb-3">Add-ons</h2>
-              <p className="text-xs text-ink-400 mb-3">Recorded with the submission; doesn't change the computed Final Rate.</p>
-              <div className="space-y-2">
-                {addOns.map((a, i) => (
-                  <label key={a.label} className="flex items-center gap-2 text-sm">
+          <div className="flex-1 min-w-0 space-y-4">
+            {error && <p className="text-sm text-red-600">{error}</p>}
+
+            <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 space-y-6">
+              <div>
+                <h2 className="font-semibold mb-3">Shipper details</h2>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs text-ink-500">Shipper Name *</label>
                     <input
-                      type="checkbox"
-                      checked={a.checked}
-                      onChange={(e) =>
-                        setAddOns((prev) => prev.map((x, j) => (j === i ? { ...x, checked: e.target.checked } : x)))
-                      }
-                    />
-                    {a.label}
-                  </label>
-                ))}
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={customAddOn.checked}
-                    onChange={(e) => setCustomAddOn((c) => ({ ...c, checked: e.target.checked }))}
-                  />
-                  Custom
-                </label>
-                {customAddOn.checked && (
-                  <div className="flex gap-3 pl-6">
-                    <input
-                      placeholder="Label"
-                      className="border border-ink-200 rounded px-2 py-1 text-sm"
-                      value={customAddOn.label}
-                      onChange={(e) => setCustomAddOn((c) => ({ ...c, label: e.target.value }))}
-                    />
-                    <input
-                      placeholder="Value / notes (optional)"
-                      className="border border-ink-200 rounded px-2 py-1 text-sm"
-                      value={customAddOn.value}
-                      onChange={(e) => setCustomAddOn((c) => ({ ...c, value: e.target.value }))}
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.shipper_name}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, shipper_name: e.target.value }))}
                     />
                   </div>
-                )}
+                  <div>
+                    <label className="text-xs text-ink-500">Sales PIC *</label>
+                    <input
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.sales_pic}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, sales_pic: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-ink-500">New or Existing Shipper</label>
+                    <select
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.shipper_status}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, shipper_status: e.target.value }))}
+                    >
+                      <option value="new">New</option>
+                      <option value="existing">Existing</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-ink-500">Potential Monthly Revenue (IDR)</label>
+                    <input
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.potential_monthly_revenue}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, potential_monthly_revenue: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-ink-500">Commodity / Item Type</label>
+                    <input
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.commodity_type}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, commodity_type: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-ink-500">High-value or Fragile?</label>
+                    <select
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.high_value_fragile ? "yes" : "no"}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, high_value_fragile: e.target.value === "yes" }))}
+                    >
+                      <option value="no">No</option>
+                      <option value="yes">Yes</option>
+                    </select>
+                  </div>
+                </div>
               </div>
+
+              <div>
+                <h2 className="font-semibold mb-3">Add-ons</h2>
+                <p className="text-xs text-ink-400 mb-3">Recorded with the submission; doesn't change the computed Final Rate.</p>
+                <div className="space-y-2">
+                  {addOns.map((a, i) => (
+                    <label key={a.label} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={a.checked}
+                        onChange={(e) =>
+                          setAddOns((prev) => prev.map((x, j) => (j === i ? { ...x, checked: e.target.checked } : x)))
+                        }
+                      />
+                      {a.label}
+                    </label>
+                  ))}
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={customAddOn.checked}
+                      onChange={(e) => setCustomAddOn((c) => ({ ...c, checked: e.target.checked }))}
+                    />
+                    Custom
+                  </label>
+                  {customAddOn.checked && (
+                    <div className="flex gap-3 pl-6">
+                      <input
+                        placeholder="Label"
+                        className="border border-ink-200 rounded px-2 py-1 text-sm"
+                        value={customAddOn.label}
+                        onChange={(e) => setCustomAddOn((c) => ({ ...c, label: e.target.value }))}
+                      />
+                      <input
+                        placeholder="Value / notes (optional)"
+                        className="border border-ink-200 rounded px-2 py-1 text-sm"
+                        value={customAddOn.value}
+                        onChange={(e) => setCustomAddOn((c) => ({ ...c, value: e.target.value }))}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <h2 className="font-semibold mb-2">Upload rate request CSV</h2>
+                <p className="text-sm text-ink-500 mb-3">
+                  Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
+                  <a
+                    href={RATE_REQUEST_TEMPLATE_URL}
+                    download="ftl_rate_request_template.csv"
+                    className="text-brand-600 hover:underline"
+                  >
+                    Download template
+                  </a>
+                </p>
+                <input type="file" accept=".csv" onChange={onFileChange} />
+                {file && !active && <p className="text-xs text-ink-400 mt-2">{previewRows.length} lane(s) parsed from {file.name}.</p>}
+              </div>
+
+              <button
+                onClick={checkResult}
+                disabled={checking || !file}
+                className="px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              >
+                {checking ? "Checking…" : "Check Result"}
+              </button>
             </div>
 
-            <button
-              onClick={goToLanes}
-              className="px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700"
-            >
-              Continue to upload lanes
-            </button>
-          </div>
-        )}
-
-        {step === "lanes" && (
-          <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
-            <h2 className="font-semibold mb-2">Upload rate request CSV</h2>
-            <p className="text-sm text-ink-500 mb-3">
-              Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
-              <a
-                href={RATE_REQUEST_TEMPLATE_URL}
-                download="ftl_rate_request_template.csv"
-                className="text-brand-600 hover:underline"
-              >
-                Download template
-              </a>
-            </p>
-            <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
-            {uploading && <p className="text-sm text-ink-500 mt-2">Processing…</p>}
-            <button onClick={() => setStep("details")} className="block mt-4 text-sm text-ink-500 hover:underline">
-              ← Back to shipper details
-            </button>
-          </div>
-        )}
-
-        {step === "result" &&
-          (active ? (
-            <div>
-              <div className="flex items-center justify-end mb-3">
-                <a
-                  href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
-                  className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50"
-                >
-                  Download quotation (Excel)
-                </a>
-              </div>
-
+            {!active && previewRows.length > 0 && (
               <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
                 <table className="w-full">
                   <thead>
@@ -664,45 +703,113 @@ function SalesView() {
                       <Th>Destination</Th>
                       <Th>Vehicle Type</Th>
                       <Th>Target Rate</Th>
-                      <Th>Final Rate</Th>
-                      <Th>Remarks</Th>
-                      <Th></Th>
                     </tr>
                   </thead>
                   <tbody>
-                    {active.rows.map((row) => (
-                      <tr key={row.id}>
+                    {previewRows.map((row, i) => (
+                      <tr key={i}>
                         <Td>{row.origin}</Td>
                         <Td>{row.destination}</Td>
                         <Td>{row.vehicle_type}</Td>
-                        <Td>{fmt(row.target_rate)}</Td>
-                        <Td className={row.final_rate == null ? "text-ink-400" : "font-medium"}>
-                          {fmt(row.final_rate)}
-                        </Td>
-                        <Td className="text-ink-500">{row.remarks}</Td>
-                        <Td>
-                          {requested[row.id] ? (
-                            <span className="text-xs text-green-600">Requested</span>
-                          ) : (
-                            <button
-                              onClick={() => requestVm(row)}
-                              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50"
-                            >
-                              Request to VM
-                            </button>
-                          )}
-                        </Td>
+                        <Td>{row.target_rate || "-"}</Td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                <p className="text-xs text-ink-400 px-3 py-2 border-t border-ink-100">
+                  Preview only — click "Check Result" to compute Final Rates.
+                </p>
               </div>
-            </div>
-          ) : (
-            <div className="text-sm text-ink-400 mt-8">Upload a CSV, or pick a past submission, to see results.</div>
-          ))}
-      </div>
-    </div>
+            )}
+
+            {active && (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    {selectedIds.size > 0 && (
+                      <button
+                        onClick={raiseSelected}
+                        disabled={bulkRequesting}
+                        className="text-sm px-3 py-1.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                      >
+                        {bulkRequesting ? "Raising…" : `Raise ${selectedIds.size} selected to VM`}
+                      </button>
+                    )}
+                  </div>
+                  <a
+                    href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
+                    className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50"
+                  >
+                    Download quotation (Excel)
+                  </a>
+                </div>
+
+                <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr>
+                        <Th>
+                          <input
+                            type="checkbox"
+                            checked={allSelected}
+                            onChange={toggleSelectAll}
+                            disabled={selectableRows.length === 0}
+                          />
+                        </Th>
+                        <Th>Origin</Th>
+                        <Th>Destination</Th>
+                        <Th>Vehicle Type</Th>
+                        <Th>Target Rate</Th>
+                        <Th>Final Rate</Th>
+                        <Th>Remarks</Th>
+                        <Th></Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {active.rows.map((row) => (
+                        <tr key={row.id}>
+                          <Td>
+                            {!requested[row.id] && (
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(row.id)}
+                                onChange={() => toggleRow(row.id)}
+                              />
+                            )}
+                          </Td>
+                          <Td>{row.origin}</Td>
+                          <Td>{row.destination}</Td>
+                          <Td>{row.vehicle_type}</Td>
+                          <Td>{fmt(row.target_rate)}</Td>
+                          <Td className={row.final_rate == null ? "text-ink-400" : "font-medium"}>
+                            {fmt(row.final_rate)}
+                          </Td>
+                          <Td className="text-ink-500">{row.remarks}</Td>
+                          <Td>
+                            {requested[row.id] ? (
+                              <span className="text-xs text-green-600">Requested</span>
+                            ) : (
+                              <button
+                                onClick={() => requestVm(row)}
+                                className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 whitespace-nowrap"
+                              >
+                                {row.final_rate == null ? "Ask VM for rates" : "Ask VM for a lower rate"}
+                              </button>
+                            )}
+                          </Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {!active && previewRows.length === 0 && (
+              <div className="text-sm text-ink-400">Fill in shipper details and upload a CSV to see a preview here.</div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
