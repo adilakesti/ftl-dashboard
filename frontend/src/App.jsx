@@ -288,7 +288,7 @@ function Discussion({ endpoint, id }) {
 
 const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
-function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled }) {
+function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
   const [expanded, setExpanded] = useState(false);
   const first = lanes[0];
   const submissionId = first.submission_id;
@@ -297,6 +297,7 @@ function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled })
   useEffect(() => {
     if (focusSubmissionId !== submissionId) return;
     setExpanded(true);
+    onOpenDiscussion(`/api/submissions/${submissionId}/comments`);
     setTimeout(() => {
       document.getElementById(`shipper-group-${submissionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 100);
@@ -320,6 +321,12 @@ function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled })
               </span>
             )}
           </span>
+        </button>
+        <button
+          onClick={() => onOpenDiscussion(`/api/submissions/${submissionId}/comments`)}
+          className="text-xs px-2.5 py-1 rounded border border-ink-200 hover:bg-white mr-3"
+        >
+          💬 Discussion
         </button>
         <a
           href={`/api/submissions/${submissionId}/quotation.xlsx`}
@@ -364,15 +371,13 @@ function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled })
               ))}
             </tbody>
           </table>
-
-          <Discussion id={`discussion-${submissionId}`} endpoint={`/api/submissions/${submissionId}/comments`} />
         </div>
       )}
     </div>
   );
 }
 
-function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHandled }) {
+function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
   const [q, setQ] = useState("");
   const s = q.toLowerCase();
   const filtered = lanes.filter(
@@ -401,6 +406,7 @@ function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHa
             kind={kind}
             focusSubmissionId={focusSubmissionId}
             onFocusHandled={onFocusHandled}
+            onOpenDiscussion={onOpenDiscussion}
           />
         ))}
         {submissionIds.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
@@ -451,6 +457,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [requested, setRequested] = useState({});
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkRequesting, setBulkRequesting] = useState(false);
+  const [discussionEndpoint, setDiscussionEndpoint] = useState(null);
 
   const [shipperForm, setShipperForm] = useState(DEFAULT_SHIPPER_FORM);
   const [addOnsState, setAddOnsState] = useState(DEFAULT_ADD_ONS_STATE);
@@ -665,11 +672,44 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
         ))}
       </div>
 
-      {mainTab === "active" && (
-        <GlobalLanesList lanes={activeLanes} emptyLabel="No active requests." kind="active" focusSubmissionId={focusSubmissionId} onFocusHandled={onFocusHandled} />
-      )}
-      {mainTab === "completed" && (
-        <GlobalLanesList lanes={completedLanes} emptyLabel="No completed requests yet." kind="completed" focusSubmissionId={focusSubmissionId} onFocusHandled={onFocusHandled} />
+      {(mainTab === "active" || mainTab === "completed") && (
+        <div className="flex gap-5 items-start">
+          <div className="flex-1 min-w-0">
+            {mainTab === "active" ? (
+              <GlobalLanesList
+                lanes={activeLanes}
+                emptyLabel="No active requests."
+                kind="active"
+                focusSubmissionId={focusSubmissionId}
+                onFocusHandled={onFocusHandled}
+                onOpenDiscussion={setDiscussionEndpoint}
+              />
+            ) : (
+              <GlobalLanesList
+                lanes={completedLanes}
+                emptyLabel="No completed requests yet."
+                kind="completed"
+                focusSubmissionId={focusSubmissionId}
+                onFocusHandled={onFocusHandled}
+                onOpenDiscussion={setDiscussionEndpoint}
+              />
+            )}
+          </div>
+
+          {discussionEndpoint && (
+            <aside className="w-[440px] shrink-0 sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
+              <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="font-semibold text-sm">Discussion</h3>
+                  <button onClick={() => setDiscussionEndpoint(null)} className="text-xs text-ink-500 hover:underline">
+                    Close
+                  </button>
+                </div>
+                <Discussion endpoint={discussionEndpoint} />
+              </div>
+            </aside>
+          )}
+        </div>
       )}
 
       {mainTab === "new" && (
@@ -1548,7 +1588,7 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
 
 const UNKNOWN_SHIPPER = "Ad-hoc / unknown shipper";
 
-function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh, views, onViewed, focusSubmissionId, onFocusHandled }) {
+function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh, views, onViewed, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
   const [collapsed, setCollapsed] = useState({});
   const [resolving, setResolving] = useState(null);
 
@@ -1571,6 +1611,7 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
     if (!name) return;
     setCollapsed((c) => ({ ...c, [name]: false }));
     onViewed(focusSubmissionId);
+    onOpenDiscussion(`/api/submissions/${focusSubmissionId}/comments`);
     setTimeout(() => {
       document.getElementById(`shipper-group-${focusSubmissionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 100);
@@ -1641,7 +1682,13 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                 )}
               </button>
               <button
-                onClick={() => toggleAndMark(name)}
+                onClick={() =>
+                  onOpenDiscussion(
+                    primary
+                      ? `/api/submissions/${primary.submission_id}/comments`
+                      : `/api/vm-requests/${rows[0].id}/comments`
+                  )
+                }
                 className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-white"
               >
                 💬 Discussion
@@ -1712,16 +1759,6 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                     ))}
                   </tbody>
                 </table>
-                <div className="px-4 pb-4">
-                  {primary ? (
-                    <Discussion
-                      id={`discussion-${primary.submission_id}`}
-                      endpoint={`/api/submissions/${primary.submission_id}/comments`}
-                    />
-                  ) : (
-                    <p className="text-xs text-ink-400 pt-3">No shipper submission linked (ad-hoc request) — no discussion thread.</p>
-                  )}
-                </div>
               </div>
             )}
           </div>
@@ -1743,6 +1780,16 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   const [selectedId, setSelectedId] = useState(null);
   const [views, setViews] = useState({});
   const [prioritizationView, setPrioritizationView] = useState(null); // null | { key, title }
+  const [discussionEndpoint, setDiscussionEndpoint] = useState(null);
+
+  const selectRow = (id) => {
+    setSelectedId(id);
+    setDiscussionEndpoint(null);
+  };
+  const openDiscussion = (endpoint) => {
+    setDiscussionEndpoint(endpoint);
+    setSelectedId(null);
+  };
 
   const loadSummary = () => fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
   const loadRequests = () => fetch("/api/vm/requests").then((r) => r.json()).then((d) => setRequests(d.requests));
@@ -1867,7 +1914,7 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
                   : r.status === "resolved" || r.status === "closed_no_vendor"
               )}
               selectedId={selectedId}
-              setSelectedId={setSelectedId}
+              setSelectedId={selectRow}
               updateStatus={updateStatus}
               onRefresh={() => {
                 loadRequests();
@@ -1877,12 +1924,25 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
               onViewed={onViewed}
               focusSubmissionId={focusSubmissionId}
               onFocusHandled={onFocusHandled}
+              onOpenDiscussion={openDiscussion}
             />
           </div>
 
-          {selected && (
+          {(selected || discussionEndpoint) && (
             <aside className="w-[440px] shrink-0 sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto">
-              <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => setSelectedId(null)} />
+              {selected ? (
+                <ResolveRequestPanel request={selected} onDone={onResolveDone} onCancel={() => selectRow(null)} />
+              ) : (
+                <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="font-semibold text-sm">Discussion</h3>
+                    <button onClick={() => setDiscussionEndpoint(null)} className="text-xs text-ink-500 hover:underline">
+                      Close
+                    </button>
+                  </div>
+                  <Discussion endpoint={discussionEndpoint} />
+                </div>
+              )}
             </aside>
           )}
         </div>
