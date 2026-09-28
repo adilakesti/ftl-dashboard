@@ -88,7 +88,48 @@ const DEFAULT_SHIPPER_FORM = {
   high_value_fragile: false,
 };
 
-const PREDEFINED_ADD_ONS = ["Multi-drop (extra stop)", "Waiting time charge", "Insurance"];
+const ADD_ON_RATES = {
+  rdo: { jawa: 7000, luar_jawa: 14000 },
+  overnight: 560000,
+  additional_drop: { intra_jawa: 270000, intra_ex_jawa: 360000 },
+};
+
+const DEFAULT_ADD_ONS_STATE = {
+  rdo: { checked: false, region: "jawa", qty: "" },
+  overnight: { checked: false },
+  additional_drop: { checked: false, region: "intra_jawa", qty: "" },
+  custom: { checked: false, label: "", value: "" },
+};
+
+function idr(n) {
+  return "Rp" + new Intl.NumberFormat("id-ID").format(n);
+}
+
+function buildAddOns(a) {
+  const out = [];
+  if (a.rdo.checked) {
+    const qty = Number(a.rdo.qty) || 0;
+    const rate = ADD_ON_RATES.rdo[a.rdo.region];
+    const regionLabel = a.rdo.region === "jawa" ? "Jawa" : "Diluar Jawa";
+    out.push({ label: "RDO", value: `${qty} RDO x ${idr(rate)} (${regionLabel}) = ${idr(qty * rate)}` });
+  }
+  if (a.overnight.checked) {
+    out.push({ label: "Overnight", value: idr(ADD_ON_RATES.overnight) });
+  }
+  if (a.additional_drop.checked) {
+    const qty = Number(a.additional_drop.qty) || 0;
+    const rate = ADD_ON_RATES.additional_drop[a.additional_drop.region];
+    const regionLabel = a.additional_drop.region === "intra_jawa" ? "Intra Jawa" : "Intra Ex Jawa";
+    out.push({
+      label: "Additional Drop Point",
+      value: `${qty} point x ${idr(rate)} (${regionLabel}) = ${idr(qty * rate)}`,
+    });
+  }
+  if (a.custom.checked && a.custom.label.trim()) {
+    out.push({ label: a.custom.label.trim(), value: a.custom.value || null });
+  }
+  return out;
+}
 
 let directoryUsersPromise = null;
 function fetchDirectoryUsers() {
@@ -273,6 +314,11 @@ function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled })
             <span className="ml-2 text-xs text-ink-400">
               ({lanes.length} lane{lanes.length !== 1 ? "s" : ""})
             </span>
+            {first.add_ons?.length > 0 && (
+              <span className="ml-2 text-xs bg-ink-100 text-ink-500 px-1.5 py-0.5 rounded-full">
+                + {first.add_ons.map((a) => a.label).join(", ")}
+              </span>
+            )}
           </span>
         </button>
         <a
@@ -407,8 +453,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [bulkRequesting, setBulkRequesting] = useState(false);
 
   const [shipperForm, setShipperForm] = useState(DEFAULT_SHIPPER_FORM);
-  const [addOns, setAddOns] = useState(PREDEFINED_ADD_ONS.map((label) => ({ label, checked: false })));
-  const [customAddOn, setCustomAddOn] = useState({ checked: false, label: "", value: "" });
+  const [addOnsState, setAddOnsState] = useState(DEFAULT_ADD_ONS_STATE);
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [uploadMode, setUploadMode] = useState("csv"); // "csv" | "manual"
@@ -435,8 +480,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setMainTab("new");
     setActive(null);
     setShipperForm(DEFAULT_SHIPPER_FORM);
-    setAddOns(PREDEFINED_ADD_ONS.map((label) => ({ label, checked: false })));
-    setCustomAddOn({ checked: false, label: "", value: "" });
+    setAddOnsState(DEFAULT_ADD_ONS_STATE);
     setFile(null);
     setPreviewRows([]);
     setUploadMode("csv");
@@ -495,12 +539,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setChecking(true);
     setError(null);
     try {
-      const selectedAddOns = [
-        ...addOns.filter((a) => a.checked).map((a) => ({ label: a.label })),
-        ...(customAddOn.checked && customAddOn.label.trim()
-          ? [{ label: customAddOn.label.trim(), value: customAddOn.value || null }]
-          : []),
-      ];
+      const selectedAddOns = buildAddOns(addOnsState);
 
       const form = new FormData();
       form.append("file", uploadMode === "manual" ? manualRowsToCsvFile() : file);
@@ -724,45 +763,152 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
               </div>
 
               <div>
-                <h2 className="font-semibold mb-3">Add-ons</h2>
-                <p className="text-xs text-ink-400 mb-3">Recorded with the submission; doesn't change the computed Final Rate.</p>
-                <div className="space-y-2">
-                  {addOns.map((a, i) => (
-                    <label key={a.label} className="flex items-center gap-2 text-sm">
+                <h2 className="font-semibold mb-3">Additional services</h2>
+                <p className="text-xs text-ink-400 mb-3">
+                  Recorded with the submission — included in the downloaded quotation and shown on the ticket.
+                  Doesn't change the computed Final Rate.
+                </p>
+                <div className="space-y-3">
+                  <div>
+                    <label className="flex items-center gap-2 text-sm font-medium">
                       <input
                         type="checkbox"
-                        checked={a.checked}
+                        checked={addOnsState.rdo.checked}
                         onChange={(e) =>
-                          setAddOns((prev) => prev.map((x, j) => (j === i ? { ...x, checked: e.target.checked } : x)))
+                          setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, checked: e.target.checked } }))
                         }
                       />
-                      {a.label}
+                      RDO (Rp7,000/RDO Jawa, Rp14,000/RDO Diluar Jawa)
                     </label>
-                  ))}
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={customAddOn.checked}
-                      onChange={(e) => setCustomAddOn((c) => ({ ...c, checked: e.target.checked }))}
-                    />
-                    Custom
-                  </label>
-                  {customAddOn.checked && (
-                    <div className="flex gap-3 pl-6">
+                    {addOnsState.rdo.checked && (
+                      <div className="flex gap-3 pl-6 mt-1">
+                        <select
+                          className="border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.rdo.region}
+                          onChange={(e) =>
+                            setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, region: e.target.value } }))
+                          }
+                        >
+                          <option value="jawa">Jawa</option>
+                          <option value="luar_jawa">Diluar Jawa</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Qty RDO"
+                          className="w-32 border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.rdo.qty}
+                          onChange={(e) => setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, qty: e.target.value } }))}
+                        />
+                        {addOnsState.rdo.qty && (
+                          <span className="text-xs text-ink-400 self-center">
+                            = {idr((Number(addOnsState.rdo.qty) || 0) * ADD_ON_RATES.rdo[addOnsState.rdo.region])}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm font-medium">
                       <input
-                        placeholder="Label"
-                        className="border border-ink-200 rounded px-2 py-1 text-sm"
-                        value={customAddOn.label}
-                        onChange={(e) => setCustomAddOn((c) => ({ ...c, label: e.target.value }))}
+                        type="checkbox"
+                        checked={addOnsState.overnight.checked}
+                        onChange={(e) =>
+                          setAddOnsState((a) => ({ ...a, overnight: { checked: e.target.checked } }))
+                        }
                       />
+                      Overnight ({idr(ADD_ON_RATES.overnight)})
+                    </label>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm font-medium">
                       <input
-                        placeholder="Value / notes (optional)"
-                        className="border border-ink-200 rounded px-2 py-1 text-sm"
-                        value={customAddOn.value}
-                        onChange={(e) => setCustomAddOn((c) => ({ ...c, value: e.target.value }))}
+                        type="checkbox"
+                        checked={addOnsState.additional_drop.checked}
+                        onChange={(e) =>
+                          setAddOnsState((a) => ({
+                            ...a,
+                            additional_drop: { ...a.additional_drop, checked: e.target.checked },
+                          }))
+                        }
                       />
-                    </div>
-                  )}
+                      Additional Drop Point (Rp270,000 Intra Jawa, Rp360,000 Intra Ex Jawa)
+                    </label>
+                    {addOnsState.additional_drop.checked && (
+                      <div className="flex gap-3 pl-6 mt-1">
+                        <select
+                          className="border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.additional_drop.region}
+                          onChange={(e) =>
+                            setAddOnsState((a) => ({
+                              ...a,
+                              additional_drop: { ...a.additional_drop, region: e.target.value },
+                            }))
+                          }
+                        >
+                          <option value="intra_jawa">Intra Jawa</option>
+                          <option value="intra_ex_jawa">Intra Ex Jawa</option>
+                        </select>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="Qty drop point"
+                          className="w-36 border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.additional_drop.qty}
+                          onChange={(e) =>
+                            setAddOnsState((a) => ({
+                              ...a,
+                              additional_drop: { ...a.additional_drop, qty: e.target.value },
+                            }))
+                          }
+                        />
+                        {addOnsState.additional_drop.qty && (
+                          <span className="text-xs text-ink-400 self-center">
+                            ={" "}
+                            {idr(
+                              (Number(addOnsState.additional_drop.qty) || 0) *
+                                ADD_ON_RATES.additional_drop[addOnsState.additional_drop.region]
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={addOnsState.custom.checked}
+                        onChange={(e) =>
+                          setAddOnsState((a) => ({ ...a, custom: { ...a.custom, checked: e.target.checked } }))
+                        }
+                      />
+                      Custom
+                    </label>
+                    {addOnsState.custom.checked && (
+                      <div className="flex gap-3 pl-6 mt-1">
+                        <input
+                          placeholder="Label"
+                          className="border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.custom.label}
+                          onChange={(e) =>
+                            setAddOnsState((a) => ({ ...a, custom: { ...a.custom, label: e.target.value } }))
+                          }
+                        />
+                        <input
+                          placeholder="Value / notes (optional)"
+                          className="border border-ink-200 rounded px-2 py-1 text-sm"
+                          value={addOnsState.custom.value}
+                          onChange={(e) =>
+                            setAddOnsState((a) => ({ ...a, custom: { ...a.custom, value: e.target.value } }))
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1483,6 +1629,11 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                   ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
                 </span>
                 {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
+                {primary?.add_ons?.length > 0 && (
+                  <span className="ml-2 text-xs bg-ink-100 text-ink-500 px-1.5 py-0.5 rounded-full">
+                    + {primary.add_ons.map((a) => a.label).join(", ")}
+                  </span>
+                )}
                 {isNew && (
                   <span className="ml-2 text-xs bg-brand-600 text-white px-1.5 py-0.5 rounded-full font-medium">
                     New

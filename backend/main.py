@@ -453,6 +453,7 @@ class VmRequest(BaseModel):
     commodity_type: str | None = None
     high_value_fragile: bool | None = None
     submission_created_at: str | None = None
+    add_ons: list[AddOn] = []
 
 
 class VmRequestList(BaseModel):
@@ -476,7 +477,7 @@ VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
-           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at
+           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at, s.add_ons
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -513,6 +514,7 @@ def _to_vm_request(r) -> VmRequest:
         high_value_fragile=bool(r[17]) if r[17] is not None else None,
         submission_id=r[18],
         submission_created_at=str(r[19]) if r[19] is not None else None,
+        add_ons=[AddOn(**a) for a in json.loads(r[20])] if r[20] else [],
     )
 
 
@@ -959,6 +961,7 @@ class LaneItem(BaseModel):
     vm_status: str | None
     vm_request_id: int | None
     aging_days: int | None
+    add_ons: list[AddOn] = []
 
 
 class LaneList(BaseModel):
@@ -978,7 +981,7 @@ async def my_lanes(request: Request):
         await cur.execute(
             """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
                       sr.vehicle_type, sr.target_rate, sr.final_rate, sr.remarks, sr.matched_vendor,
-                      vr.status, vr.id, vr.created_at, s.created_at
+                      vr.status, vr.id, vr.created_at, s.created_at, s.add_ons
                FROM submission_rows sr
                JOIN submissions s ON sr.submission_id = s.id
                LEFT JOIN vm_requests vr ON vr.id = (
@@ -1016,6 +1019,7 @@ async def my_lanes(request: Request):
                 vm_status=r[11],
                 vm_request_id=r[12],
                 aging_days=aging,
+                add_ons=[AddOn(**a) for a in json.loads(r[15])] if r[15] else [],
             )
         )
     return LaneList(lanes=lanes)
@@ -1054,6 +1058,12 @@ async def submission_quotation(submission_id: int, request: Request):
     ws.append(["Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks"])
     for r in rows:
         ws.append([r[0], r[1], r[2], float(r[3]), r[4] or ""])
+
+    if submission.add_ons:
+        ws.append([])
+        ws.append(["Additional Services"])
+        for a in submission.add_ons:
+            ws.append([a.label, a.value or ""])
 
     buf = io.BytesIO()
     wb.save(buf)

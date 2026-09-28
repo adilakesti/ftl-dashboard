@@ -347,7 +347,8 @@
           "potential_monthly_revenue": { "type": "number", "nullable": true },
           "commodity_type": { "type": "string", "nullable": true },
           "high_value_fragile": { "type": "boolean", "nullable": true },
-          "submission_created_at": { "type": "string", "nullable": true }
+          "submission_created_at": { "type": "string", "nullable": true },
+          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },
@@ -368,7 +369,8 @@
           "matched_vendor": { "type": "string", "nullable": true },
           "vm_status": { "type": "string", "nullable": true, "enum": ["open", "in_progress", null], "description": "Set only when there's a currently open/in_progress VM request for this lane." },
           "vm_request_id": { "type": "integer", "nullable": true },
-          "aging_days": { "type": "integer", "nullable": true }
+          "aging_days": { "type": "integer", "nullable": true },
+          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
         }
       },
       "LaneList": { "type": "object", "properties": { "lanes": { "type": "array", "items": { "$ref": "#/components/schemas/LaneItem" } } } },
