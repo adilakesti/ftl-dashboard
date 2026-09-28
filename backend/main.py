@@ -940,6 +940,82 @@ async def my_tickets(request: Request):
     return VmRequestList(requests=[_to_vm_request(r) for r in rows])
 
 
+class LaneItem(BaseModel):
+    id: int
+    submission_id: int
+    shipper_name: str | None
+    sales_pic: str | None
+    origin: str
+    destination: str
+    vehicle_type: str
+    target_rate: float | None
+    final_rate: float | None
+    remarks: str
+    matched_vendor: str | None
+    vm_status: str | None
+    vm_request_id: int | None
+    aging_days: int | None
+
+
+class LaneList(BaseModel):
+    lanes: list[LaneItem]
+
+
+@app.get("/api/lanes", response_model=LaneList)
+async def my_lanes(request: Request):
+    """Sales: every lane from every one of this user's submissions — not just
+    the ones raised to VM. A lane is "active" while it has a currently
+    open/in_progress VM request; otherwise, if it has a Final Rate or an
+    explicit "no vendor" outcome, it's "completed" (whether that came from
+    the initial check or from VM resolving it) — the basis for the global
+    Active/Completed Request views, which cover ALL requested OD lanes."""
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
+                      sr.vehicle_type, sr.target_rate, sr.final_rate, sr.remarks, sr.matched_vendor,
+                      vr.status, vr.id, vr.created_at
+               FROM submission_rows sr
+               JOIN submissions s ON sr.submission_id = s.id
+               LEFT JOIN vm_requests vr ON vr.id = (
+                   SELECT id FROM vm_requests
+                   WHERE submission_row_id = sr.id AND status IN ('open', 'in_progress')
+                   ORDER BY id DESC LIMIT 1
+               )
+               WHERE s.uploaded_by = %s
+               ORDER BY s.id DESC, sr.id ASC""",
+            (email,),
+        )
+        rows = await cur.fetchall()
+
+    lanes = []
+    for r in rows:
+        vm_created = r[13]
+        aging = None
+        if vm_created is not None:
+            now = datetime.now(vm_created.tzinfo) if vm_created.tzinfo else datetime.now()
+            aging = max(0, (now - vm_created).days)
+        lanes.append(
+            LaneItem(
+                id=r[0],
+                submission_id=r[1],
+                shipper_name=r[2],
+                sales_pic=r[3],
+                origin=r[4],
+                destination=r[5],
+                vehicle_type=r[6],
+                target_rate=float(r[7]) if r[7] is not None else None,
+                final_rate=float(r[8]) if r[8] is not None else None,
+                remarks=r[9] or "",
+                matched_vendor=r[10],
+                vm_status=r[11],
+                vm_request_id=r[12],
+                aging_days=aging,
+            )
+        )
+    return LaneList(lanes=lanes)
+
+
 @app.get("/api/submissions/{submission_id}/quotation.xlsx")
 async def submission_quotation(submission_id: int, request: Request):
     email = await require_role(request, "sales")

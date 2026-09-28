@@ -96,6 +96,12 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestList" } } } } }
       }
     },
+    "/api/lanes": {
+      "get": {
+        "summary": "Sales: every lane from every one of this user's submissions, not just ones raised to VM. A lane is active while it has a currently open/in_progress VM request; otherwise it's completed if it has a Final Rate or an explicit no-vendor outcome. Feeds the global Active/Completed Request views (which cover ALL requested OD lanes, not only escalated ones).",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LaneList" } } } } }
+      }
+    },
     "/api/vm-requests/{request_id}/comments": {
       "get": {
         "summary": "List the discussion thread on a VM request (visible to sales/VM/superadmin; persists across open, resolved and closed states).",
@@ -306,6 +312,26 @@
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },
+      "LaneItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "description": "submission_row id" },
+          "submission_id": { "type": "integer" },
+          "shipper_name": { "type": "string", "nullable": true },
+          "sales_pic": { "type": "string", "nullable": true },
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "target_rate": { "type": "number", "nullable": true },
+          "final_rate": { "type": "number", "nullable": true },
+          "remarks": { "type": "string" },
+          "matched_vendor": { "type": "string", "nullable": true },
+          "vm_status": { "type": "string", "nullable": true, "enum": ["open", "in_progress", null], "description": "Set only when there's a currently open/in_progress VM request for this lane." },
+          "vm_request_id": { "type": "integer", "nullable": true },
+          "aging_days": { "type": "integer", "nullable": true }
+        }
+      },
+      "LaneList": { "type": "object", "properties": { "lanes": { "type": "array", "items": { "$ref": "#/components/schemas/LaneItem" } } } },
       "VmRequestUpdate": {
         "type": "object",
         "properties": {

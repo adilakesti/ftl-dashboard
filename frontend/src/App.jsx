@@ -173,119 +173,85 @@ function Discussion({ endpoint }) {
 
 const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
-function ShipperTicketGroup({ shipperName, tickets }) {
+function LaneSubmissionGroup({ lanes, kind }) {
   const [expanded, setExpanded] = useState(false);
-  const first = tickets[0];
+  const first = lanes[0];
   const submissionId = first.submission_id;
+  const shipperName = first.shipper_name || UNKNOWN_SHIPPER_SALES;
 
   return (
     <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-ink-50"
-      >
-        <span className="text-sm">
-          <span className="font-semibold">{shipperName}</span>
-          {first.sales_pic && <span className="ml-2 text-xs text-ink-400">{first.sales_pic}</span>}
-          <span className="ml-2 text-xs text-ink-400">
-            ({tickets.length} lane{tickets.length !== 1 ? "s" : ""})
+      <div className="flex items-center justify-between px-4 py-2.5 hover:bg-ink-50">
+        <button onClick={() => setExpanded((v) => !v)} className="flex-1 text-left">
+          <span className="text-sm">
+            <span className="font-semibold">{shipperName}</span>
+            {first.sales_pic && <span className="ml-2 text-xs text-ink-400">{first.sales_pic}</span>}
+            <span className="ml-2 text-xs text-ink-400">
+              ({lanes.length} lane{lanes.length !== 1 ? "s" : ""})
+            </span>
           </span>
-        </span>
-        <span className="text-xs text-ink-400">{expanded ? "Collapse" : "Expand"}</span>
-      </button>
+        </button>
+        <a
+          href={`/api/submissions/${submissionId}/quotation.xlsx`}
+          onClick={(e) => e.stopPropagation()}
+          className="text-xs px-2.5 py-1 rounded border border-ink-200 hover:bg-white mr-3"
+        >
+          Download quotation
+        </a>
+        <button onClick={() => setExpanded((v) => !v)} className="text-xs text-ink-400">
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+      </div>
       {expanded && (
         <div className="border-t border-ink-100 px-4 py-3">
-          {shipperName !== UNKNOWN_SHIPPER_SALES && (
-            <div className="grid grid-cols-3 gap-3 text-sm mb-4 pb-4 border-b border-ink-100">
-              <div>
-                <span className="text-xs text-ink-400 block">Shipper</span>
-                {first.shipper_name || "-"}
-              </div>
-              <div>
-                <span className="text-xs text-ink-400 block">Sales PIC</span>
-                {first.sales_pic || "-"}
-              </div>
-              <div>
-                <span className="text-xs text-ink-400 block">Shipper Status</span>
-                {first.shipper_status || "-"}
-              </div>
-              <div>
-                <span className="text-xs text-ink-400 block">Potential Monthly Revenue</span>
-                {fmt(first.potential_monthly_revenue)}
-              </div>
-              <div>
-                <span className="text-xs text-ink-400 block">Commodity</span>
-                {first.commodity_type || "-"}
-              </div>
-              <div>
-                <span className="text-xs text-ink-400 block">High-value / Fragile</span>
-                {first.high_value_fragile ? "Yes" : "No"}
-              </div>
-            </div>
-          )}
-
           <table className="w-full mb-1">
             <thead>
               <tr>
                 <Th>Origin</Th>
                 <Th>Destination</Th>
                 <Th>Vehicle</Th>
-                <Th>Status</Th>
-                <Th>Aging (days)</Th>
-                <Th>Outcome</Th>
+                <Th>Target Rate</Th>
+                <Th>Final Rate</Th>
+                <Th>Remarks</Th>
+                {kind === "active" && <Th>Aging (days)</Th>}
               </tr>
             </thead>
             <tbody>
-              {tickets.map((t) => (
-                <tr key={t.id}>
-                  <Td>{t.origin}</Td>
-                  <Td>{t.destination}</Td>
-                  <Td>{t.vehicle_type}</Td>
-                  <Td>{STATUS_LABEL[t.status] || t.status}</Td>
-                  <Td>{t.aging_days}</Td>
-                  <Td className={t.status === "closed_no_vendor" ? "text-red-500" : "font-medium"}>
-                    {t.status === "resolved"
-                      ? `${t.resolved_vendor || ""} — ${fmt(t.current_final_rate)}`
-                      : t.status === "closed_no_vendor"
-                      ? "No vendor available"
-                      : "-"}
+              {lanes.map((l) => (
+                <tr key={l.id}>
+                  <Td>{l.origin}</Td>
+                  <Td>{l.destination}</Td>
+                  <Td>{l.vehicle_type}</Td>
+                  <Td>{fmt(l.target_rate)}</Td>
+                  <Td className={l.final_rate == null ? "text-ink-400" : "font-medium"}>{fmt(l.final_rate)}</Td>
+                  <Td className={l.remarks === "No vendor available (VM)" ? "text-red-500" : "text-ink-500"}>
+                    {l.remarks || "-"}
                   </Td>
+                  {kind === "active" && <Td>{l.aging_days ?? "-"}</Td>}
                 </tr>
               ))}
             </tbody>
           </table>
 
-          <Discussion
-            endpoint={
-              submissionId ? `/api/submissions/${submissionId}/comments` : `/api/vm-requests/${first.id}/comments`
-            }
-          />
+          <Discussion endpoint={`/api/submissions/${submissionId}/comments`} />
         </div>
       )}
     </div>
   );
 }
 
-function GlobalTicketsList({ tickets, emptyLabel }) {
+function GlobalLanesList({ lanes, emptyLabel, kind }) {
   const [q, setQ] = useState("");
   const s = q.toLowerCase();
-  const filteredTickets = tickets.filter(
-    (t) =>
-      !s ||
-      (t.shipper_name || "").toLowerCase().includes(s) ||
-      (t.sales_pic || "").toLowerCase().includes(s)
+  const filtered = lanes.filter(
+    (l) => !s || (l.shipper_name || "").toLowerCase().includes(s) || (l.sales_pic || "").toLowerCase().includes(s)
   );
 
   const groups = {};
-  for (const t of filteredTickets) {
-    const key = t.shipper_name || UNKNOWN_SHIPPER_SALES;
-    (groups[key] = groups[key] || []).push(t);
+  for (const l of filtered) {
+    (groups[l.submission_id] = groups[l.submission_id] || []).push(l);
   }
-  const shipperNames = Object.keys(groups).sort((a, b) => {
-    if (a === UNKNOWN_SHIPPER_SALES) return 1;
-    if (b === UNKNOWN_SHIPPER_SALES) return -1;
-    return a.localeCompare(b);
-  });
+  const submissionIds = Object.keys(groups).sort((a, b) => Number(b) - Number(a));
 
   return (
     <div>
@@ -296,10 +262,10 @@ function GlobalTicketsList({ tickets, emptyLabel }) {
         onChange={(e) => setQ(e.target.value)}
       />
       <div className="space-y-2">
-        {shipperNames.map((name) => (
-          <ShipperTicketGroup key={name} shipperName={name} tickets={groups[name]} />
+        {submissionIds.map((id) => (
+          <LaneSubmissionGroup key={id} lanes={groups[id]} kind={kind} />
         ))}
-        {shipperNames.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
+        {submissionIds.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
       </div>
     </div>
   );
@@ -341,7 +307,7 @@ function SalesView() {
   const [mainTab, setMainTab] = useState("new");
   const [submissions, setSubmissions] = useState([]);
   const [active, setActive] = useState(null); // {submission, rows} — set once "Check Result" runs
-  const [globalTickets, setGlobalTickets] = useState([]);
+  const [lanes, setLanes] = useState([]);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState(null);
   const [requested, setRequested] = useState({});
@@ -362,15 +328,15 @@ function SalesView() {
       .then((d) => setSubmissions(d.submissions));
   };
 
-  const loadGlobalTickets = () => {
-    fetch("/api/tickets")
+  const loadLanes = () => {
+    fetch("/api/lanes")
       .then((r) => r.json())
-      .then((d) => setGlobalTickets(d.requests));
+      .then((d) => setLanes(d.lanes));
   };
 
   useEffect(() => {
     loadSubmissions();
-    loadGlobalTickets();
+    loadLanes();
   }, []);
 
   const startNew = () => {
@@ -464,7 +430,7 @@ function SalesView() {
       setRequested({});
       setSelectedIds(new Set());
       loadSubmissions();
-      loadGlobalTickets();
+      loadLanes();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -499,6 +465,7 @@ function SalesView() {
       }),
     });
     setRequested((r) => ({ ...r, [row.id]: true }));
+    loadLanes();
   };
 
   const toggleRow = (id) => {
@@ -530,22 +497,24 @@ function SalesView() {
         await requestVm(row);
       }
       setSelectedIds(new Set());
-      loadGlobalTickets();
+      loadLanes();
     } finally {
       setBulkRequesting(false);
     }
   };
 
-  const activeTickets = globalTickets.filter((t) => t.status === "open" || t.status === "in_progress");
-  const completedTickets = globalTickets.filter((t) => t.status === "resolved" || t.status === "closed_no_vendor");
+  const activeLanes = lanes.filter((l) => l.vm_status === "open" || l.vm_status === "in_progress");
+  const completedLanes = lanes.filter(
+    (l) => !(l.vm_status === "open" || l.vm_status === "in_progress") && (l.final_rate != null || l.remarks === "No vendor available (VM)")
+  );
 
   return (
     <div>
       <div className="flex gap-2 mb-6">
         {[
           { key: "new", label: "New Request" },
-          { key: "active", label: `Active Request (${activeTickets.length})` },
-          { key: "completed", label: `Completed Request (${completedTickets.length})` },
+          { key: "active", label: `Active Request (${activeLanes.length})` },
+          { key: "completed", label: `Completed Request (${completedLanes.length})` },
         ].map((t) => (
           <button
             key={t.key}
@@ -560,10 +529,10 @@ function SalesView() {
       </div>
 
       {mainTab === "active" && (
-        <GlobalTicketsList tickets={activeTickets} emptyLabel="No active requests." />
+        <GlobalLanesList lanes={activeLanes} emptyLabel="No active requests." kind="active" />
       )}
       {mainTab === "completed" && (
-        <GlobalTicketsList tickets={completedTickets} emptyLabel="No completed requests yet." />
+        <GlobalLanesList lanes={completedLanes} emptyLabel="No completed requests yet." kind="completed" />
       )}
 
       {mainTab === "new" && (
