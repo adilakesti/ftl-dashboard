@@ -2164,7 +2164,7 @@ function AppInner() {
           </div>
           <div className="hidden md:flex items-end gap-2 shrink-0">
             <img src="/assets/ryo-jump.png" alt="" className="h-20 -mb-1 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
-            <img src="/assets/truck-ninjavan.png" alt="" className="h-24 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
+            <img src="/assets/truck-side.png" alt="" className="h-24 drop-shadow-[0_6px_10px_rgba(0,0,0,0.35)]" />
           </div>
         </div>
 
@@ -2212,7 +2212,7 @@ function AppInner() {
 
       <footer className="max-w-[1400px] mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
         <span>PRIVATE AND CONFIDENTIAL</span>
-        <img src="/assets/truck-ninjavan.png" alt="" className="h-9 opacity-80" />
+        <img src="/assets/truck-side.png" alt="" className="h-9 opacity-80" />
       </footer>
 
       <NotificationBell onNavigate={(submissionId) => setFocusSubmissionId(submissionId)} />
