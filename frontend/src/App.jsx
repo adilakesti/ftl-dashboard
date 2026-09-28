@@ -90,11 +90,48 @@ const DEFAULT_SHIPPER_FORM = {
 
 const PREDEFINED_ADD_ONS = ["Multi-drop (extra stop)", "Waiting time charge", "Insurance"];
 
-function Discussion({ endpoint }) {
+let directoryUsersPromise = null;
+function fetchDirectoryUsers() {
+  if (!directoryUsersPromise) {
+    directoryUsersPromise = fetch("/api/users")
+      .then((r) => r.json())
+      .then((d) => d.users)
+      .catch(() => []);
+  }
+  return directoryUsersPromise;
+}
+
+const MENTION_RE = /@(\w[\w.]*)/g;
+
+function renderWithMentions(message) {
+  const parts = [];
+  let last = 0;
+  let m;
+  MENTION_RE.lastIndex = 0;
+  while ((m = MENTION_RE.exec(message))) {
+    if (m.index > last) parts.push(message.slice(last, m.index));
+    parts.push(
+      <span key={m.index} className="text-brand-600 font-medium">
+        {m[0]}
+      </span>
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < message.length) parts.push(message.slice(last));
+  return parts;
+}
+
+function Discussion({ endpoint, id }) {
   const [comments, setComments] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [mentionOptions, setMentionOptions] = useState([]);
+
+  useEffect(() => {
+    fetchDirectoryUsers().then(setUsers);
+  }, []);
 
   const load = () =>
     fetch(endpoint)
@@ -120,6 +157,24 @@ function Discussion({ endpoint }) {
     };
   }, [endpoint]);
 
+  const onTextChange = (e) => {
+    const value = e.target.value;
+    setText(value);
+    const m = value.match(/@(\w*)$/);
+    if (m) {
+      const q = m[1].toLowerCase();
+      setMentionOptions(users.filter((u) => u.email.split("@")[0].toLowerCase().startsWith(q)).slice(0, 6));
+    } else {
+      setMentionOptions([]);
+    }
+  };
+
+  const pickMention = (email) => {
+    const local = email.split("@")[0];
+    setText((t) => t.replace(/@(\w*)$/, `@${local} `));
+    setMentionOptions([]);
+  };
+
   const send = async () => {
     if (!text.trim() || sending) return;
     setSending(true);
@@ -130,6 +185,7 @@ function Discussion({ endpoint }) {
         body: JSON.stringify({ message: text.trim() }),
       });
       setText("");
+      setMentionOptions([]);
       await load();
     } finally {
       setSending(false);
@@ -137,35 +193,53 @@ function Discussion({ endpoint }) {
   };
 
   return (
-    <div className="mt-3 border-t border-ink-100 pt-3">
+    <div id={id} className="mt-3 border-t border-ink-100 pt-3">
       <p className="text-xs text-ink-500 uppercase font-semibold mb-2">Discussion</p>
-      <div className="space-y-2 max-h-48 overflow-y-auto mb-2">
+      <div className="space-y-2 max-h-64 overflow-y-auto mb-2 bg-ink-50 rounded-lg p-2">
         {comments.map((c) => (
-          <div key={c.id} className="text-sm">
-            <span className="font-medium">{c.author_email}</span>{" "}
-            <span className="text-ink-400 text-xs">{c.created_at}</span>
-            <div className="text-ink-700">{c.message}</div>
+          <div key={c.id} className="bg-white rounded-lg px-3 py-2 shadow-sm text-sm">
+            <div className="flex items-baseline gap-2">
+              <span className="font-medium">{c.author_email}</span>
+              <span className="text-ink-400 text-xs">{c.created_at}</span>
+            </div>
+            <div className="text-ink-700 whitespace-pre-wrap">{renderWithMentions(c.message)}</div>
           </div>
         ))}
-        {loaded && comments.length === 0 && <p className="text-xs text-ink-400">No messages yet.</p>}
+        {loaded && comments.length === 0 && <p className="text-xs text-ink-400 px-1">No messages yet.</p>}
       </div>
-      <div className="flex gap-2">
-        <input
-          className="flex-1 border border-ink-200 rounded px-2 py-1 text-sm"
-          placeholder="Write a message…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send();
-          }}
-        />
-        <button
-          onClick={send}
-          disabled={sending}
-          className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700"
-        >
-          Send
-        </button>
+      <div className="relative">
+        {mentionOptions.length > 0 && (
+          <div className="absolute bottom-full left-0 mb-1 w-64 bg-white border border-ink-200 rounded-lg shadow-lg overflow-hidden z-10">
+            {mentionOptions.map((u) => (
+              <button
+                key={u.email}
+                onClick={() => pickMention(u.email)}
+                className="w-full text-left px-3 py-1.5 text-xs hover:bg-ink-50 flex justify-between"
+              >
+                <span>{u.email}</span>
+                <span className="text-ink-400 uppercase">{u.role}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            className="flex-1 border border-ink-200 rounded px-2 py-1 text-sm"
+            placeholder="Write a message… (@ to mention someone)"
+            value={text}
+            onChange={onTextChange}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && mentionOptions.length === 0) send();
+            }}
+          />
+          <button
+            onClick={send}
+            disabled={sending}
+            className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700"
+          >
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -173,14 +247,24 @@ function Discussion({ endpoint }) {
 
 const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
-function LaneSubmissionGroup({ lanes, kind }) {
+function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled }) {
   const [expanded, setExpanded] = useState(false);
   const first = lanes[0];
   const submissionId = first.submission_id;
   const shipperName = first.shipper_name || UNKNOWN_SHIPPER_SALES;
 
+  useEffect(() => {
+    if (focusSubmissionId !== submissionId) return;
+    setExpanded(true);
+    setTimeout(() => {
+      document.getElementById(`shipper-group-${submissionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    onFocusHandled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSubmissionId]);
+
   return (
-    <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
+    <div id={`shipper-group-${submissionId}`} className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 hover:bg-ink-50">
         <button onClick={() => setExpanded((v) => !v)} className="flex-1 text-left">
           <span className="text-sm">
@@ -235,14 +319,14 @@ function LaneSubmissionGroup({ lanes, kind }) {
             </tbody>
           </table>
 
-          <Discussion endpoint={`/api/submissions/${submissionId}/comments`} />
+          <Discussion id={`discussion-${submissionId}`} endpoint={`/api/submissions/${submissionId}/comments`} />
         </div>
       )}
     </div>
   );
 }
 
-function GlobalLanesList({ lanes, emptyLabel, kind }) {
+function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHandled }) {
   const [q, setQ] = useState("");
   const s = q.toLowerCase();
   const filtered = lanes.filter(
@@ -265,7 +349,13 @@ function GlobalLanesList({ lanes, emptyLabel, kind }) {
       />
       <div className="space-y-2">
         {submissionIds.map((id) => (
-          <LaneSubmissionGroup key={id} lanes={groups[id]} kind={kind} />
+          <LaneSubmissionGroup
+            key={id}
+            lanes={groups[id]}
+            kind={kind}
+            focusSubmissionId={focusSubmissionId}
+            onFocusHandled={onFocusHandled}
+          />
         ))}
         {submissionIds.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
       </div>
@@ -305,7 +395,7 @@ function parseCsvPreview(text) {
     .filter((r) => r.origin && r.destination && r.vehicle_type);
 }
 
-function SalesView() {
+function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [mainTab, setMainTab] = useState("new");
   const [submissions, setSubmissions] = useState([]);
   const [active, setActive] = useState(null); // {submission, rows} — set once "Check Result" runs
@@ -510,6 +600,12 @@ function SalesView() {
     (l) => !(l.vm_status === "open" || l.vm_status === "in_progress") && (l.final_rate != null || l.remarks === "No vendor available (VM)")
   );
 
+  useEffect(() => {
+    if (!focusSubmissionId) return;
+    if (activeLanes.some((l) => l.submission_id === focusSubmissionId)) setMainTab("active");
+    else if (completedLanes.some((l) => l.submission_id === focusSubmissionId)) setMainTab("completed");
+  }, [focusSubmissionId, lanes]);
+
   return (
     <div>
       <div className="flex gap-2 mb-6">
@@ -531,10 +627,10 @@ function SalesView() {
       </div>
 
       {mainTab === "active" && (
-        <GlobalLanesList lanes={activeLanes} emptyLabel="No active requests." kind="active" />
+        <GlobalLanesList lanes={activeLanes} emptyLabel="No active requests." kind="active" focusSubmissionId={focusSubmissionId} onFocusHandled={onFocusHandled} />
       )}
       {mainTab === "completed" && (
-        <GlobalLanesList lanes={completedLanes} emptyLabel="No completed requests yet." kind="completed" />
+        <GlobalLanesList lanes={completedLanes} emptyLabel="No completed requests yet." kind="completed" focusSubmissionId={focusSubmissionId} onFocusHandled={onFocusHandled} />
       )}
 
       {mainTab === "new" && (
@@ -1284,13 +1380,9 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
         </button>
       </div>
 
-      <Discussion
-        endpoint={
-          request.submission_id
-            ? `/api/submissions/${request.submission_id}/comments`
-            : `/api/vm-requests/${request.id}/comments`
-        }
-      />
+      <p className="mt-3 text-xs text-ink-400">
+        Discussion for this shipper is on the request list below — collapse this panel and expand the shipper group.
+      </p>
     </div>
   );
 }
@@ -1301,7 +1393,7 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
 
 const UNKNOWN_SHIPPER = "Ad-hoc / unknown shipper";
 
-function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh }) {
+function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh, views, onViewed, focusSubmissionId, onFocusHandled }) {
   const [collapsed, setCollapsed] = useState({});
   const [resolving, setResolving] = useState(null);
 
@@ -1317,6 +1409,19 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
   });
 
   const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !(c[name] ?? true) }));
+
+  useEffect(() => {
+    if (!focusSubmissionId) return;
+    const name = Object.keys(groups).find((k) => groups[k].some((r) => r.submission_id === focusSubmissionId));
+    if (!name) return;
+    setCollapsed((c) => ({ ...c, [name]: false }));
+    onViewed(focusSubmissionId);
+    setTimeout(() => {
+      document.getElementById(`shipper-group-${focusSubmissionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    onFocusHandled();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSubmissionId, requests]);
 
   const resolveReady = async (name) => {
     setResolving(name);
@@ -1342,27 +1447,55 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
         const isCollapsed = collapsed[name] ?? true;
         const salesPic = rows[0].sales_pic || rows[0].requested_by;
         const openCount = rows.filter((r) => r.status === "open" || r.status === "in_progress").length;
+        const withSubmission = rows.filter((r) => r.submission_id);
+        const primary = withSubmission.length
+          ? withSubmission.reduce((a, b) => (new Date(b.submission_created_at) > new Date(a.submission_created_at) ? b : a))
+          : null;
+        const lastViewed = primary ? views[primary.submission_id] : null;
+        const isNew = primary && (!lastViewed || new Date(primary.submission_created_at) > new Date(lastViewed));
+        const toggleAndMark = (n) => {
+          toggle(n);
+          if (primary && (collapsed[n] ?? true)) onViewed(primary.submission_id);
+        };
         return (
-          <div key={name} className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2.5 hover:bg-ink-50">
-              <button onClick={() => toggle(name)} className="flex-1 text-left">
+          <div
+            key={name}
+            id={primary ? `shipper-group-${primary.submission_id}` : undefined}
+            className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden"
+          >
+            <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-ink-50">
+              <button onClick={() => toggleAndMark(name)} className="w-24 shrink-0 text-left text-xs text-ink-400">
+                {primary ? primary.submission_created_at?.slice(0, 10) : "-"}
+              </button>
+              <button onClick={() => toggleAndMark(name)} className="flex-1 text-left">
                 <span className="font-semibold text-sm">{name}</span>
                 <span className="ml-2 text-xs text-ink-400">{salesPic}</span>
                 <span className="ml-2 text-xs text-ink-400">
                   ({rows.length} lane{rows.length !== 1 ? "s" : ""}, {openCount} open)
                 </span>
                 {openCount === 0 && <span className="ml-2 text-xs text-green-600 font-medium">✓ Complete</span>}
+                {isNew && (
+                  <span className="ml-2 text-xs bg-brand-600 text-white px-1.5 py-0.5 rounded-full font-medium">
+                    New
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => toggleAndMark(name)}
+                className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-white"
+              >
+                💬 Discussion
               </button>
               {openCount > 0 && (
                 <button
                   onClick={() => resolveReady(name)}
                   disabled={resolving === name}
-                  className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 mr-3"
+                  className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-white"
                 >
                   {resolving === name ? "Resolving…" : "Resolve all with existing rate"}
                 </button>
               )}
-              <button onClick={() => toggle(name)} className="text-xs text-ink-400">
+              <button onClick={() => toggleAndMark(name)} className="text-xs text-ink-400">
                 {isCollapsed ? "Expand" : "Collapse"}
               </button>
             </div>
@@ -1419,6 +1552,16 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                     ))}
                   </tbody>
                 </table>
+                <div className="px-4 pb-4">
+                  {primary ? (
+                    <Discussion
+                      id={`discussion-${primary.submission_id}`}
+                      endpoint={`/api/submissions/${primary.submission_id}/comments`}
+                    />
+                  ) : (
+                    <p className="text-xs text-ink-400 pt-3">No shipper submission linked (ad-hoc request) — no discussion thread.</p>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -1433,19 +1576,34 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
 // VM: view
 // ---------------------------------------------------------------------------
 
-function VmView() {
+function VmView({ focusSubmissionId, onFocusHandled }) {
   const [tab, setTab] = useState("summary");
   const [summary, setSummary] = useState(null);
   const [requests, setRequests] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
+  const [views, setViews] = useState({});
 
   const loadSummary = () => fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
   const loadRequests = () => fetch("/api/vm/requests").then((r) => r.json()).then((d) => setRequests(d.requests));
+  const loadViews = () =>
+    fetch("/api/ticket-views")
+      .then((r) => r.json())
+      .then((d) => setViews(Object.fromEntries(d.views.map((v) => [v.submission_id, v.last_viewed_at]))));
 
   useEffect(() => {
     loadSummary();
     loadRequests();
+    loadViews();
   }, []);
+
+  useEffect(() => {
+    if (focusSubmissionId) setTab("requests");
+  }, [focusSubmissionId]);
+
+  const onViewed = (submissionId) => {
+    setViews((v) => ({ ...v, [submissionId]: new Date().toISOString() }));
+    fetch(`/api/submissions/${submissionId}/view`, { method: "POST" });
+  };
 
   const updateStatus = async (id, status) => {
     await fetch(`/api/vm/requests/${id}`, {
@@ -1522,6 +1680,10 @@ function VmView() {
                 loadRequests();
                 loadSummary();
               }}
+              views={views}
+              onViewed={onViewed}
+              focusSubmissionId={focusSubmissionId}
+              onFocusHandled={onFocusHandled}
             />
           </div>
 
@@ -1691,9 +1853,88 @@ function BrandedMessage({ title, children }) {
 
 const VIEW_LABEL = { sales: "Sales", vm: "Vendor Mgmt", admin: "Admin" };
 
+function NotificationBell({ onNavigate }) {
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState([]);
+  const [unread, setUnread] = useState(0);
+
+  const load = () =>
+    fetch("/api/notifications")
+      .then((r) => r.json())
+      .then((d) => {
+        setItems(d.notifications);
+        setUnread(d.unread_count);
+      })
+      .catch(() => {});
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const openItem = async (n) => {
+    if (!n.read_at) {
+      await fetch(`/api/notifications/${n.id}/read`, { method: "POST" });
+      load();
+    }
+    setOpen(false);
+    onNavigate(n.submission_id);
+  };
+
+  const markAllRead = async () => {
+    await fetch("/api/notifications/read-all", { method: "POST" });
+    load();
+  };
+
+  return (
+    <div className="fixed bottom-5 right-5 z-40">
+      {open && (
+        <div className="mb-2 w-80 max-h-96 overflow-y-auto bg-white rounded-xl border border-ink-100 shadow-2xl">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-ink-100 sticky top-0 bg-white">
+            <span className="text-sm font-semibold">Notifications</span>
+            {unread > 0 && (
+              <button onClick={markAllRead} className="text-xs text-brand-600 hover:underline">
+                Mark all read
+              </button>
+            )}
+          </div>
+          {items.length === 0 && <p className="text-xs text-ink-400 p-3">No notifications yet.</p>}
+          {items.map((n) => (
+            <button
+              key={n.id}
+              onClick={() => openItem(n)}
+              className={`w-full text-left px-3 py-2 border-b border-ink-50 hover:bg-ink-50 ${
+                n.read_at ? "" : "bg-brand-50"
+              }`}
+            >
+              <div className="text-xs font-medium">{n.shipper_name || `Submission #${n.submission_id}`}</div>
+              <div className="text-xs text-ink-500 line-clamp-2">{n.message}</div>
+              <div className="text-[10px] text-ink-400 mt-0.5">{n.created_at}</div>
+            </button>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="relative h-12 w-12 rounded-full bg-brand-600 text-white shadow-lg flex items-center justify-center hover:bg-brand-700"
+        title="Notifications"
+      >
+        🔔
+        {unread > 0 && (
+          <span className="absolute -top-1 -right-1 bg-white text-brand-700 text-[10px] font-bold rounded-full h-5 w-5 flex items-center justify-center border-2 border-brand-600">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
 function AppInner() {
   const { me, loading } = useMe();
   const [view, setView] = useState("sales");
+  const [focusSubmissionId, setFocusSubmissionId] = useState(null);
 
   if (loading) return <BrandedMessage title="Loading…">Warming up the trucks.</BrandedMessage>;
 
@@ -1767,8 +2008,12 @@ function AppInner() {
       </header>
 
       <main className="p-6 max-w-[1400px] mx-auto">
-        {activeView === "sales" && <SalesView />}
-        {activeView === "vm" && <VmView />}
+        {activeView === "sales" && (
+          <SalesView focusSubmissionId={focusSubmissionId} onFocusHandled={() => setFocusSubmissionId(null)} />
+        )}
+        {activeView === "vm" && (
+          <VmView focusSubmissionId={focusSubmissionId} onFocusHandled={() => setFocusSubmissionId(null)} />
+        )}
         {activeView === "admin" && <AdminPanel />}
       </main>
 
@@ -1776,6 +2021,8 @@ function AppInner() {
         <span>PRIVATE AND CONFIDENTIAL</span>
         <img src="/assets/truck-ninjavan.png" alt="" className="h-9 opacity-80" />
       </footer>
+
+      <NotificationBell onNavigate={(submissionId) => setFocusSubmissionId(submissionId)} />
     </div>
   );
 }

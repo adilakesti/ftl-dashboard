@@ -102,6 +102,44 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LaneList" } } } } }
       }
     },
+    "/api/users": {
+      "get": {
+        "summary": "Any provisioned user: the full roster (email + role), for @mention autocomplete in a discussion thread.",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DirectoryUserList" } } } } }
+      }
+    },
+    "/api/notifications": {
+      "get": {
+        "summary": "The current user's personal notifications (currently: @mentions in a submission discussion), newest first, plus an unread count.",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationList" } } } } }
+      }
+    },
+    "/api/notifications/{notification_id}/read": {
+      "post": {
+        "summary": "Mark one of the current user's notifications as read.",
+        "parameters": [{ "name": "notification_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "204": { "description": "No Content" } }
+      }
+    },
+    "/api/notifications/read-all": {
+      "post": {
+        "summary": "Mark all of the current user's unread notifications as read.",
+        "responses": { "204": { "description": "No Content" } }
+      }
+    },
+    "/api/ticket-views": {
+      "get": {
+        "summary": "The current user's per-submission \"last viewed\" timestamps, used to show a \"New\" badge on tickets they haven't opened yet.",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TicketViewList" } } } } }
+      }
+    },
+    "/api/submissions/{submission_id}/view": {
+      "post": {
+        "summary": "Mark a submission's ticket/discussion as viewed by the current user (upserts their ticket_views row), clearing its \"New\" badge for them.",
+        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "204": { "description": "No Content" } }
+      }
+    },
     "/api/vm-requests/{request_id}/comments": {
       "get": {
         "summary": "List the discussion thread on a VM request (visible to sales/VM/superadmin; persists across open, resolved and closed states).",
@@ -308,7 +346,8 @@
           "shipper_status": { "type": "string", "nullable": true, "enum": ["new", "existing", null] },
           "potential_monthly_revenue": { "type": "number", "nullable": true },
           "commodity_type": { "type": "string", "nullable": true },
-          "high_value_fragile": { "type": "boolean", "nullable": true }
+          "high_value_fragile": { "type": "boolean", "nullable": true },
+          "submission_created_at": { "type": "string", "nullable": true }
         }
       },
       "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },
@@ -333,6 +372,31 @@
         }
       },
       "LaneList": { "type": "object", "properties": { "lanes": { "type": "array", "items": { "$ref": "#/components/schemas/LaneItem" } } } },
+      "DirectoryUser": { "type": "object", "properties": { "email": { "type": "string" }, "role": { "type": "string" } } },
+      "DirectoryUserList": { "type": "object", "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/DirectoryUser" } } } },
+      "NotificationItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "submission_id": { "type": "integer" },
+          "shipper_name": { "type": "string", "nullable": true },
+          "message": { "type": "string" },
+          "created_at": { "type": "string" },
+          "read_at": { "type": "string", "nullable": true }
+        }
+      },
+      "NotificationList": {
+        "type": "object",
+        "properties": {
+          "notifications": { "type": "array", "items": { "$ref": "#/components/schemas/NotificationItem" } },
+          "unread_count": { "type": "integer" }
+        }
+      },
+      "TicketViewItem": {
+        "type": "object",
+        "properties": { "submission_id": { "type": "integer" }, "last_viewed_at": { "type": "string" } }
+      },
+      "TicketViewList": { "type": "object", "properties": { "views": { "type": "array", "items": { "$ref": "#/components/schemas/TicketViewItem" } } } },
       "VmRequestUpdate": {
         "type": "object",
         "properties": {

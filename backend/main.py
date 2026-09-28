@@ -8,6 +8,7 @@ table (user_roles) keyed by email; an unprovisioned email is shown a
 import csv
 import io
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -451,6 +452,7 @@ class VmRequest(BaseModel):
     potential_monthly_revenue: float | None = None
     commodity_type: str | None = None
     high_value_fragile: bool | None = None
+    submission_created_at: str | None = None
 
 
 class VmRequestList(BaseModel):
@@ -474,7 +476,7 @@ VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
-           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id
+           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -510,6 +512,7 @@ def _to_vm_request(r) -> VmRequest:
         commodity_type=r[16],
         high_value_fragile=bool(r[17]) if r[17] is not None else None,
         submission_id=r[18],
+        submission_created_at=str(r[19]) if r[19] is not None else None,
     )
 
 
@@ -1171,6 +1174,34 @@ async def list_submission_comments(submission_id: int, request: Request):
     )
 
 
+MENTION_RE = re.compile(r"@(\w[\w.]*)")
+
+
+async def _notify_mentions(cur, submission_id: int, author_email: str, message: str) -> None:
+    """Find @mentions in a discussion message (matched by prefix against the
+    provisioned users' email local-part, e.g. "@adila" matches
+    "adila.kestibawani@ninjavan.co") and create a notification for each
+    mentioned user, excluding the author."""
+    tokens = {m.group(1).lower() for m in MENTION_RE.finditer(message)}
+    if not tokens:
+        return
+    await cur.execute("SELECT email FROM user_roles")
+    all_emails = [r[0] for r in await cur.fetchall()]
+    notified = set()
+    for email in all_emails:
+        if email == author_email:
+            continue
+        local = email.split("@")[0].lower()
+        if any(local.startswith(t) or t.startswith(local) for t in tokens):
+            notified.add(email)
+    snippet = message if len(message) <= 200 else message[:197] + "..."
+    for recipient in notified:
+        await cur.execute(
+            "INSERT INTO notifications (recipient_email, submission_id, message) VALUES (%s, %s, %s)",
+            (recipient, submission_id, f"{author_email} mentioned you: {snippet}"),
+        )
+
+
 @app.post("/api/submissions/{submission_id}/comments", response_model=SubmissionComment, status_code=201)
 async def create_submission_comment(submission_id: int, body: SubmissionCommentIn, request: Request):
     email = await require_any_role(request)
@@ -1180,11 +1211,13 @@ async def create_submission_comment(submission_id: int, body: SubmissionCommentI
         await cur.execute("SELECT id FROM submissions WHERE id = %s", (submission_id,))
         if not await cur.fetchone():
             raise HTTPException(404, "Submission not found")
+        message = body.message.strip()
         await cur.execute(
             "INSERT INTO submission_comments (submission_id, author_email, message) VALUES (%s, %s, %s)",
-            (submission_id, email, body.message.strip()),
+            (submission_id, email, message),
         )
         comment_id = cur.lastrowid
+        await _notify_mentions(cur, submission_id, email, message)
         await cur.execute(
             "SELECT id, submission_id, author_email, message, created_at FROM submission_comments WHERE id = %s",
             (comment_id,),
@@ -1193,3 +1226,118 @@ async def create_submission_comment(submission_id: int, body: SubmissionCommentI
     return SubmissionComment(
         id=row[0], submission_id=row[1], author_email=row[2], message=row[3], created_at=str(row[4])
     )
+
+
+# ---------------------------------------------------------------------------
+# Users (for @mention lookup), notifications, and per-user "seen" tracking
+# ---------------------------------------------------------------------------
+
+
+class DirectoryUser(BaseModel):
+    email: str
+    role: str
+
+
+class DirectoryUserList(BaseModel):
+    users: list[DirectoryUser]
+
+
+@app.get("/api/users", response_model=DirectoryUserList)
+async def list_directory_users(request: Request):
+    """Any provisioned user: the full roster, for @mention autocomplete."""
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT email, role FROM user_roles ORDER BY email")
+        rows = await cur.fetchall()
+    return DirectoryUserList(users=[DirectoryUser(email=r[0], role=r[1]) for r in rows])
+
+
+class NotificationItem(BaseModel):
+    id: int
+    submission_id: int
+    shipper_name: str | None
+    message: str
+    created_at: str
+    read_at: str | None
+
+
+class NotificationList(BaseModel):
+    notifications: list[NotificationItem]
+    unread_count: int
+
+
+@app.get("/api/notifications", response_model=NotificationList)
+async def list_notifications(request: Request):
+    email = await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """SELECT n.id, n.submission_id, s.shipper_name, n.message, n.created_at, n.read_at
+               FROM notifications n
+               LEFT JOIN submissions s ON n.submission_id = s.id
+               WHERE n.recipient_email = %s
+               ORDER BY n.created_at DESC LIMIT 50""",
+            (email,),
+        )
+        rows = await cur.fetchall()
+        await cur.execute(
+            "SELECT COUNT(*) FROM notifications WHERE recipient_email = %s AND read_at IS NULL", (email,)
+        )
+        unread = (await cur.fetchone())[0]
+    return NotificationList(
+        notifications=[
+            NotificationItem(
+                id=r[0], submission_id=r[1], shipper_name=r[2], message=r[3], created_at=str(r[4]),
+                read_at=str(r[5]) if r[5] is not None else None,
+            )
+            for r in rows
+        ],
+        unread_count=unread,
+    )
+
+
+@app.post("/api/notifications/{notification_id}/read", status_code=204)
+async def mark_notification_read(notification_id: int, request: Request):
+    email = await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE notifications SET read_at = NOW() WHERE id = %s AND recipient_email = %s",
+            (notification_id, email),
+        )
+
+
+@app.post("/api/notifications/read-all", status_code=204)
+async def mark_all_notifications_read(request: Request):
+    email = await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE notifications SET read_at = NOW() WHERE recipient_email = %s AND read_at IS NULL", (email,)
+        )
+
+
+class TicketViewItem(BaseModel):
+    submission_id: int
+    last_viewed_at: str
+
+
+class TicketViewList(BaseModel):
+    views: list[TicketViewItem]
+
+
+@app.get("/api/ticket-views", response_model=TicketViewList)
+async def list_ticket_views(request: Request):
+    email = await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT submission_id, last_viewed_at FROM ticket_views WHERE viewer_email = %s", (email,))
+        rows = await cur.fetchall()
+    return TicketViewList(views=[TicketViewItem(submission_id=r[0], last_viewed_at=str(r[1])) for r in rows])
+
+
+@app.post("/api/submissions/{submission_id}/view", status_code=204)
+async def mark_submission_viewed(submission_id: int, request: Request):
+    email = await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """INSERT INTO ticket_views (viewer_email, submission_id, last_viewed_at) VALUES (%s, %s, NOW())
+               ON DUPLICATE KEY UPDATE last_viewed_at = NOW()""",
+            (email, submission_id),
+        )
