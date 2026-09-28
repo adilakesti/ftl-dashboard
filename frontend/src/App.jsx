@@ -353,6 +353,8 @@ function SalesView() {
   const [customAddOn, setCustomAddOn] = useState({ checked: false, label: "", value: "" });
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
+  const [uploadMode, setUploadMode] = useState("csv"); // "csv" | "manual"
+  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
 
   const loadSubmissions = () => {
     fetch("/api/submissions")
@@ -379,8 +381,32 @@ function SalesView() {
     setCustomAddOn({ checked: false, label: "", value: "" });
     setFile(null);
     setPreviewRows([]);
+    setUploadMode("csv");
+    setManualRows([{ origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
     setSelectedIds(new Set());
     setError(null);
+  };
+
+  const updateManualRow = (i, field, value) => {
+    setActive(null);
+    setManualRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
+  };
+  const addManualRow = () => {
+    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
+  };
+  const removeManualRow = (i) => {
+    setActive(null);
+    setManualRows((rows) => (rows.length > 1 ? rows.filter((_, j) => j !== i) : rows));
+  };
+
+  const manualRowsFilled = manualRows.filter((r) => r.origin.trim() && r.destination.trim() && r.vehicle_type.trim());
+
+  const manualRowsToCsvFile = () => {
+    const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate"];
+    for (const r of manualRowsFilled) {
+      lines.push([r.origin, r.destination, r.vehicle_type, r.target_rate || ""].join(","));
+    }
+    return new File([lines.join("\n")], "manual_entry.csv", { type: "text/csv" });
   };
 
   const onFileChange = (e) => {
@@ -400,8 +426,12 @@ function SalesView() {
       setError("Shipper Name and Sales PIC are required");
       return;
     }
-    if (!file) {
+    if (uploadMode === "csv" && !file) {
       setError("Upload a lanes CSV first");
+      return;
+    }
+    if (uploadMode === "manual" && manualRowsFilled.length === 0) {
+      setError("Add at least one lane (origin, destination, vehicle type)");
       return;
     }
     setChecking(true);
@@ -415,7 +445,7 @@ function SalesView() {
       ];
 
       const form = new FormData();
-      form.append("file", file);
+      form.append("file", uploadMode === "manual" ? manualRowsToCsvFile() : file);
       form.append("shipper_name", shipperForm.shipper_name);
       form.append("sales_pic", shipperForm.sales_pic);
       form.append("shipper_status", shipperForm.shipper_status);
@@ -670,31 +700,101 @@ function SalesView() {
               </div>
 
               <div>
-                <h2 className="font-semibold mb-2">Upload rate request CSV</h2>
-                <p className="text-sm text-ink-500 mb-3">
-                  Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
-                  <a
-                    href={RATE_REQUEST_TEMPLATE_URL}
-                    download="ftl_rate_request_template.csv"
-                    className="text-brand-600 hover:underline"
-                  >
-                    Download template
-                  </a>
-                </p>
-                <input type="file" accept=".csv" onChange={onFileChange} />
-                {file && !active && <p className="text-xs text-ink-400 mt-2">{previewRows.length} lane(s) parsed from {file.name}.</p>}
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-semibold">Lanes</h2>
+                  <div className="flex gap-1">
+                    {[
+                      { key: "csv", label: "Upload CSV" },
+                      { key: "manual", label: "Enter manually" },
+                    ].map((m) => (
+                      <button
+                        key={m.key}
+                        onClick={() => {
+                          setUploadMode(m.key);
+                          setActive(null);
+                        }}
+                        className={`px-3 py-1 rounded text-xs font-medium ${
+                          uploadMode === m.key ? "bg-brand-600 text-white" : "bg-ink-100 text-ink-500"
+                        }`}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {uploadMode === "csv" ? (
+                  <div>
+                    <p className="text-sm text-ink-500 mb-3">
+                      Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
+                      <a
+                        href={RATE_REQUEST_TEMPLATE_URL}
+                        download="ftl_rate_request_template.csv"
+                        className="text-brand-600 hover:underline"
+                      >
+                        Download template
+                      </a>
+                    </p>
+                    <input type="file" accept=".csv" onChange={onFileChange} />
+                    {file && !active && <p className="text-xs text-ink-400 mt-2">{previewRows.length} lane(s) parsed from {file.name}.</p>}
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-sm text-ink-500 mb-3">
+                      Good for a quick 1-2 lane request — add rows below instead of preparing a CSV.
+                    </p>
+                    <div className="space-y-2">
+                      {manualRows.map((row, i) => (
+                        <div key={i} className="flex gap-2 items-center">
+                          <input
+                            placeholder="L2 Origin"
+                            className="flex-1 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.origin}
+                            onChange={(e) => updateManualRow(i, "origin", e.target.value)}
+                          />
+                          <input
+                            placeholder="L2 Destinasi"
+                            className="flex-1 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.destination}
+                            onChange={(e) => updateManualRow(i, "destination", e.target.value)}
+                          />
+                          <input
+                            placeholder="Vehicle Type"
+                            className="w-32 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.vehicle_type}
+                            onChange={(e) => updateManualRow(i, "vehicle_type", e.target.value)}
+                          />
+                          <input
+                            placeholder="Target Rate (optional)"
+                            className="w-40 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.target_rate}
+                            onChange={(e) => updateManualRow(i, "target_rate", e.target.value)}
+                          />
+                          {manualRows.length > 1 && (
+                            <button onClick={() => removeManualRow(i)} className="text-ink-400 hover:text-red-600 text-sm px-1">
+                              ✕
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={addManualRow} className="mt-2 text-sm text-brand-600 hover:underline">
+                      + Add lane
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
                 onClick={checkResult}
-                disabled={checking || !file}
+                disabled={checking || (uploadMode === "csv" ? !file : manualRowsFilled.length === 0)}
                 className="px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
               >
                 {checking ? "Checking…" : "Check Result"}
               </button>
             </div>
 
-            {!active && previewRows.length > 0 && (
+            {!active && uploadMode === "csv" && previewRows.length > 0 && (
               <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
                 <table className="w-full">
                   <thead>
@@ -805,7 +905,7 @@ function SalesView() {
               </div>
             )}
 
-            {!active && previewRows.length === 0 && (
+            {!active && uploadMode === "csv" && previewRows.length === 0 && (
               <div className="text-sm text-ink-400">Fill in shipper details and upload a CSV to see a preview here.</div>
             )}
           </div>
