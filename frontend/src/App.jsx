@@ -1,4 +1,5 @@
 import { Component, Fragment, useEffect, useState } from "react";
+import { L2_LOCATIONS, VEHICLE_TYPES, canonicalL2 } from "./l2Locations.js";
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -582,7 +583,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [uploadMode, setUploadMode] = useState("csv"); // "csv" | "manual"
-  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
 
   const loadSubmissions = () => {
     fetch("/api/submissions")
@@ -609,7 +610,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setFile(null);
     setPreviewRows([]);
     setUploadMode("csv");
-    setManualRows([{ origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+    setManualRows([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
     setSelectedIds(new Set());
     setError(null);
   };
@@ -619,20 +620,22 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setManualRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
   };
   const addManualRow = () => {
-    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
   };
   const removeManualRow = (i) => {
     setActive(null);
     setManualRows((rows) => (rows.length > 1 ? rows.filter((_, j) => j !== i) : rows));
   };
 
-  const manualRowsFilled = manualRows.filter((r) => r.origin.trim() && r.destination.trim() && r.vehicle_type.trim());
+  const effectiveVehicle = (r) => (r.vehicle_choice === "__other__" ? r.vehicle_type : r.vehicle_choice).trim();
+  const manualRowsFilled = manualRows.filter((r) => r.origin.trim() && r.destination.trim() && effectiveVehicle(r));
+  const badLocation = (v) => v.trim() !== "" && !canonicalL2(v);
 
   const manualRowsToCsvFile = () => {
     const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum dedicated trip,Minimum trip"];
     for (const r of manualRowsFilled) {
       lines.push(
-        [r.origin, r.destination, r.vehicle_type, r.target_rate || "", r.min_dedicated_trip || "", r.min_trip || ""].join(",")
+        [canonicalL2(r.origin), canonicalL2(r.destination), effectiveVehicle(r), r.target_rate || "", r.min_dedicated_trip || "", r.min_trip || ""].join(",")
       );
     }
     return new File([lines.join("\n")], "manual_entry.csv", { type: "text/csv" });
@@ -661,6 +664,10 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     }
     if (uploadMode === "manual" && manualRowsFilled.length === 0) {
       setError("Add at least one lane (origin, destination, vehicle type)");
+      return;
+    }
+    if (uploadMode === "manual" && manualRows.some((r) => badLocation(r.origin) || badLocation(r.destination))) {
+      setError("Pick Origin and Destination from the L2 list (red fields aren't in the list)");
       return;
     }
     setChecking(true);
@@ -1111,27 +1118,63 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                     <p className="text-sm text-ink-500 mb-3">
                       Good for a quick 1-2 lane request — add rows below instead of preparing a CSV.
                     </p>
+                    <datalist id="l2-locations">
+                      {L2_LOCATIONS.map((n) => (
+                        <option key={n} value={n} />
+                      ))}
+                    </datalist>
                     <div className="space-y-2">
                       {manualRows.map((row, i) => (
                         <div key={i} className="flex gap-2 items-center">
                           <input
-                            placeholder="L2 Origin"
-                            className="flex-1 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            list="l2-locations"
+                            placeholder="L2 Origin (pick from list)"
+                            className={`flex-1 border rounded px-2 py-1.5 text-sm ${
+                              badLocation(row.origin) ? "border-red-400 bg-red-50" : "border-ink-200"
+                            }`}
                             value={row.origin}
                             onChange={(e) => updateManualRow(i, "origin", e.target.value)}
+                            onBlur={(e) => {
+                              const c = canonicalL2(e.target.value);
+                              if (c && c !== row.origin) updateManualRow(i, "origin", c);
+                            }}
                           />
                           <input
-                            placeholder="L2 Destinasi"
-                            className="flex-1 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            list="l2-locations"
+                            placeholder="L2 Destinasi (pick from list)"
+                            className={`flex-1 border rounded px-2 py-1.5 text-sm ${
+                              badLocation(row.destination) ? "border-red-400 bg-red-50" : "border-ink-200"
+                            }`}
                             value={row.destination}
                             onChange={(e) => updateManualRow(i, "destination", e.target.value)}
+                            onBlur={(e) => {
+                              const c = canonicalL2(e.target.value);
+                              if (c && c !== row.destination) updateManualRow(i, "destination", c);
+                            }}
                           />
-                          <input
-                            placeholder="Vehicle Type"
-                            className="w-32 border border-ink-200 rounded px-2 py-1.5 text-sm"
-                            value={row.vehicle_type}
-                            onChange={(e) => updateManualRow(i, "vehicle_type", e.target.value)}
-                          />
+                          <div className="w-40 flex flex-col gap-1">
+                            <select
+                              className="border border-ink-200 rounded px-2 py-1.5 text-sm bg-white"
+                              value={row.vehicle_choice}
+                              onChange={(e) => updateManualRow(i, "vehicle_choice", e.target.value)}
+                            >
+                              <option value="">Vehicle type…</option>
+                              {VEHICLE_TYPES.map((v) => (
+                                <option key={v} value={v}>
+                                  {v}
+                                </option>
+                              ))}
+                              <option value="__other__">Others…</option>
+                            </select>
+                            {row.vehicle_choice === "__other__" && (
+                              <input
+                                placeholder="Type the vehicle"
+                                className="border border-ink-200 rounded px-2 py-1.5 text-sm"
+                                value={row.vehicle_type}
+                                onChange={(e) => updateManualRow(i, "vehicle_type", e.target.value)}
+                              />
+                            )}
+                          </div>
                           <input
                             placeholder="Target Rate (optional)"
                             className="w-40 border border-ink-200 rounded px-2 py-1.5 text-sm"
