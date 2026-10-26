@@ -197,7 +197,6 @@ class SubmissionRow(BaseModel):
     final_rate: float | None
     remarks: str
     matched_vendor: str | None
-    min_dedicated_trip: int | None = None
     min_trip: int | None = None
     raised_to_vm: bool = False
 
@@ -239,8 +238,6 @@ CSV_HEADER_ALIASES = {
     "destination": "destination",
     "vehicle type": "vehicle_type",
     "target rate": "target_rate",
-    "minimum dedicated trip": "min_dedicated_trip",
-    "min dedicated trip": "min_dedicated_trip",
     "minimum trip": "min_trip",
     "min trip": "min_trip",
 }
@@ -291,7 +288,6 @@ def _parse_csv(content: bytes) -> list[dict]:
                 "destination": row["destination"],
                 "vehicle_type": row["vehicle_type"],
                 "target_rate": target_rate,
-                "min_dedicated_trip": _parse_whole_number(row.get("min_dedicated_trip", "")),
                 "min_trip": _parse_whole_number(row.get("min_trip", "")),
             }
         )
@@ -397,8 +393,8 @@ async def upload_submission(
                 """INSERT INTO submission_rows
                    (submission_id, origin, destination, vehicle_type, target_rate,
                     final_rate, remarks, matched_vendor, matched_cost,
-                    min_dedicated_trip, min_trip, matched_basis, matched_ranked)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    min_trip, matched_basis, matched_ranked)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     submission_id,
                     row["origin"],
@@ -409,7 +405,6 @@ async def upload_submission(
                     result.remarks,
                     result.matched_vendor,
                     result.matched_cost,
-                    row["min_dedicated_trip"],
                     row["min_trip"],
                     basis,
                     ranked_json,
@@ -435,7 +430,6 @@ async def upload_submission(
                     final_rate=result.final_rate,
                     remarks=result.remarks,
                     matched_vendor=result.matched_vendor if not result.single_vendor else None,
-                    min_dedicated_trip=row["min_dedicated_trip"],
                     min_trip=row["min_trip"],
                     raised_to_vm=result.single_vendor,
                 )
@@ -479,7 +473,7 @@ async def get_submission(submission_id: int, request: Request):
 
         await cur.execute(
             """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
-                      remarks, matched_vendor, min_dedicated_trip, min_trip,
+                      remarks, matched_vendor, min_trip,
                       EXISTS(SELECT 1 FROM vm_requests vr WHERE vr.submission_row_id = submission_rows.id
                              AND vr.status IN ('open', 'in_progress'))
                FROM submission_rows WHERE submission_id = %s ORDER BY id""",
@@ -499,9 +493,8 @@ async def get_submission(submission_id: int, request: Request):
                 final_rate=float(r[5]) if r[5] is not None else None,
                 remarks=r[6] or "",
                 matched_vendor=r[7],
-                min_dedicated_trip=r[8],
-                min_trip=r[9],
-                raised_to_vm=bool(r[10]),
+                min_trip=r[8],
+                raised_to_vm=bool(r[9]),
             )
             for r in rows
         ],
@@ -552,7 +545,6 @@ class VmRequest(BaseModel):
     submission_created_at: str | None = None
     add_ons: list[AddOn] = []
     sales_email: str | None = None
-    min_dedicated_trip: int | None = None
     min_trip: int | None = None
     auto_closed_sla: bool = False
     # VM-only (left empty/None in the sales-facing views):
@@ -587,7 +579,7 @@ VM_REQUEST_SELECT_FROM = """
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
            s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at, s.add_ons,
-           s.sales_email, sr.min_dedicated_trip, sr.min_trip, sr.matched_basis, sr.matched_ranked,
+           s.sales_email, sr.min_trip, sr.matched_basis, sr.matched_ranked,
            vr.single_vendor_approved, vr.override_reason, vr.override_by, vr.auto_closed_sla
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
@@ -637,9 +629,8 @@ def _to_vm_request(r, lane_counts: dict | None = None) -> VmRequest:
         submission_created_at=str(r[19]) if r[19] is not None else None,
         add_ons=[AddOn(**a) for a in json.loads(r[20])] if r[20] else [],
         sales_email=r[21],
-        min_dedicated_trip=r[22],
-        min_trip=r[23],
-        auto_closed_sla=bool(r[29]),
+        min_trip=r[22],
+        auto_closed_sla=bool(r[28]),
         **_vm_only_fields(r, lane_counts),
     )
 
@@ -650,15 +641,15 @@ def _vm_only_fields(r, lane_counts: dict | None) -> dict:
     key = (master_rates.norm(r[1]), master_rates.norm(r[2]), master_rates.norm(r[3]))
     count = lane_counts.get(key, 0)
     ranked = []
-    if r[25]:
-        ranked = [RankedVendor(**v) for v in json.loads(r[25])]
+    if r[24]:
+        ranked = [RankedVendor(**v) for v in json.loads(r[24])]
     return {
         "vendor_count": count,
         "only_one_vendor": count == 1,
-        "single_vendor_approved": bool(r[26]),
-        "override_reason": r[27],
-        "override_by": r[28],
-        "winner_basis": r[24],
+        "single_vendor_approved": bool(r[25]),
+        "override_reason": r[26],
+        "override_by": r[27],
+        "winner_basis": r[23],
         "ranked_vendors": ranked,
     }
 
@@ -1223,7 +1214,6 @@ class LaneItem(BaseModel):
     aging_days: int | None
     add_ons: list[AddOn] = []
     sales_email: str | None = None
-    min_dedicated_trip: int | None = None
     min_trip: int | None = None
     auto_closed_sla: bool = False
 
@@ -1246,7 +1236,7 @@ async def my_lanes(request: Request):
             """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
                       sr.vehicle_type, sr.target_rate, sr.final_rate, sr.remarks, sr.matched_vendor,
                       vr.status, vr.id, vr.created_at, s.created_at, s.add_ons,
-                      s.sales_email, sr.min_dedicated_trip, sr.min_trip,
+                      s.sales_email, sr.min_trip,
                       (SELECT MAX(auto_closed_sla) FROM vm_requests WHERE submission_row_id = sr.id)
                FROM submission_rows sr
                JOIN submissions s ON sr.submission_id = s.id
@@ -1287,9 +1277,8 @@ async def my_lanes(request: Request):
                 aging_days=aging,
                 add_ons=[AddOn(**a) for a in json.loads(r[15])] if r[15] else [],
                 sales_email=r[16],
-                min_dedicated_trip=r[17],
-                min_trip=r[18],
-                auto_closed_sla=bool(r[19]),
+                min_trip=r[17],
+                auto_closed_sla=bool(r[18]),
             )
         )
     return LaneList(lanes=lanes)
@@ -1308,7 +1297,7 @@ async def submission_quotation(submission_id: int, request: Request):
             raise HTTPException(404, "Submission not found")
 
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, final_rate, remarks, min_dedicated_trip, min_trip
+            """SELECT origin, destination, vehicle_type, final_rate, remarks, min_trip
                FROM submission_rows WHERE submission_id = %s AND final_rate IS NOT NULL
                ORDER BY id""",
             (submission_id,),
@@ -1327,12 +1316,11 @@ async def submission_quotation(submission_id: int, request: Request):
     ws.append([])
     ws.append(
         [
-            "Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks",
-            "Min Dedicated Trip / month", "Min Trip / month",
+            "Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks", "Min Trip / month",
         ]
     )
     for r in rows:
-        ws.append([r[0], r[1], r[2], float(r[3]), r[4] or "", r[5], r[6]])
+        ws.append([r[0], r[1], r[2], float(r[3]), r[4] or "", r[5]])
 
     if submission.add_ons:
         ws.append([])

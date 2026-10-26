@@ -35,7 +35,7 @@
     },
     "/api/submissions/upload": {
       "post": {
-        "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests (optional columns: Target Rate, Minimum dedicated trip, Minimum trip). Lanes with fewer than 2 vendors get no rate and are raised to VM automatically.",
+        "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests (optional columns: Target Rate, Minimum trip). Lanes with fewer than 2 vendors get no rate and are raised to VM automatically.",
         "requestBody": {
           "required": true,
           "content": {
@@ -344,7 +344,6 @@
           "final_rate": { "type": "number", "nullable": true },
           "remarks": { "type": "string" },
           "matched_vendor": { "type": "string", "nullable": true },
-          "min_dedicated_trip": { "type": "integer", "nullable": true, "description": "Optional, per month; informational." },
           "min_trip": { "type": "integer", "nullable": true, "description": "Optional, per month; informational." },
           "raised_to_vm": { "type": "boolean", "description": "True while an open VM ticket exists for this row (e.g. auto-raised because the lane has fewer than 2 vendors)." }
         }
@@ -410,7 +409,6 @@
           "submission_created_at": { "type": "string", "nullable": true },
           "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
           "sales_email": { "type": "string", "nullable": true },
-          "min_dedicated_trip": { "type": "integer", "nullable": true },
           "min_trip": { "type": "integer", "nullable": true },
           "auto_closed_sla": { "type": "boolean", "description": "Closed automatically after 7 days with no VM action." },
           "vendor_count": { "type": "integer", "nullable": true, "description": "VM views only." },
@@ -448,7 +446,6 @@
           "aging_days": { "type": "integer", "nullable": true },
           "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
           "sales_email": { "type": "string", "nullable": true },
-          "min_dedicated_trip": { "type": "integer", "nullable": true },
           "min_trip": { "type": "integer", "nullable": true },
           "auto_closed_sla": { "type": "boolean" }
         }

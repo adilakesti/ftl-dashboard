@@ -34,9 +34,9 @@ class ErrorBoundary extends Component {
 }
 
 const RATE_REQUEST_TEMPLATE_CSV =
-  "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum dedicated trip,Minimum trip\n" +
-  "Kab. Bekasi,Kota Surabaya,CDE,7000000,10,20\n" +
-  "Kab. Bekasi,Kota Bandung,Wingbox,,,\n";
+  "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum trip\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,7000000,20\n" +
+  "Kab. Bekasi,Kota Bandung,Wingbox,,\n";
 const RATE_REQUEST_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
 
 const MASTER_RATE_TEMPLATE_CSV =
@@ -451,7 +451,6 @@ function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocus
                 <Th>Target Rate</Th>
                 <Th>Final Rate</Th>
                 <Th>Remarks</Th>
-                <Th>Min Ded. Trip</Th>
                 <Th>Min Trip</Th>
                 {kind === "active" && <Th>Aging (days)</Th>}
               </tr>
@@ -473,7 +472,6 @@ function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocus
                       </span>
                     )}
                   </Td>
-                  <Td>{l.min_dedicated_trip ?? "-"}</Td>
                   <Td>{l.min_trip ?? "-"}</Td>
                   {kind === "active" && <Td>{l.aging_days ?? "-"}</Td>}
                 </tr>
@@ -537,8 +535,6 @@ const CSV_ALIASES = {
   "destination": "destination",
   "vehicle type": "vehicle_type",
   "target rate": "target_rate",
-  "minimum dedicated trip": "min_dedicated_trip",
-  "min dedicated trip": "min_dedicated_trip",
   "minimum trip": "min_trip",
   "min trip": "min_trip",
 };
@@ -583,7 +579,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [uploadMode, setUploadMode] = useState("csv"); // "csv" | "manual"
-  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_trip: "" }]);
 
   const loadSubmissions = () => {
     fetch("/api/submissions")
@@ -610,7 +606,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setFile(null);
     setPreviewRows([]);
     setUploadMode("csv");
-    setManualRows([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+    setManualRows([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_trip: "" }]);
     setSelectedIds(new Set());
     setError(null);
   };
@@ -620,7 +616,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setManualRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
   };
   const addManualRow = () => {
-    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
+    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_trip: "" }]);
   };
   const removeManualRow = (i) => {
     setActive(null);
@@ -632,10 +628,15 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const badLocation = (v) => v.trim() !== "" && !canonicalL2(v);
 
   const manualRowsToCsvFile = () => {
-    const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum dedicated trip,Minimum trip"];
+    // Quote every cell and keep numbers digits-only: "3,800,000" would otherwise split into extra CSV columns.
+    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const digits = (v) => String(v ?? "").replace(/[^0-9]/g, "");
+    const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum trip"];
     for (const r of manualRowsFilled) {
       lines.push(
-        [canonicalL2(r.origin), canonicalL2(r.destination), effectiveVehicle(r), r.target_rate || "", r.min_dedicated_trip || "", r.min_trip || ""].join(",")
+        [canonicalL2(r.origin), canonicalL2(r.destination), effectiveVehicle(r), digits(r.target_rate), digits(r.min_trip)]
+          .map(cell)
+          .join(",")
       );
     }
     return new File([lines.join("\n")], "manual_entry.csv", { type: "text/csv" });
@@ -1101,7 +1102,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                 {uploadMode === "csv" ? (
                   <div>
                     <p className="text-sm text-ink-500 mb-3">
-                      Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate, Minimum dedicated trip, Minimum trip (all optional; trips are per month).{" "}
+                      Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate, Minimum trip (both optional; minimum trip is per month).{" "}
                       <a
                         href={RATE_REQUEST_TEMPLATE_URL}
                         download="ftl_rate_request_template.csv"
@@ -1185,15 +1186,6 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                             type="number"
                             min="0"
                             step="1"
-                            placeholder="Min dedicated trip /mo"
-                            className="w-44 border border-ink-200 rounded px-2 py-1.5 text-sm"
-                            value={row.min_dedicated_trip}
-                            onChange={(e) => updateManualRow(i, "min_dedicated_trip", e.target.value)}
-                          />
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
                             placeholder="Min trip /mo"
                             className="w-32 border border-ink-200 rounded px-2 py-1.5 text-sm"
                             value={row.min_trip}
@@ -1232,7 +1224,6 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                       <Th>Destination</Th>
                       <Th>Vehicle Type</Th>
                       <Th>Target Rate</Th>
-                      <Th>Min Ded. Trip</Th>
                       <Th>Min Trip</Th>
                     </tr>
                   </thead>
@@ -1243,7 +1234,6 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                         <Td>{row.destination}</Td>
                         <Td>{row.vehicle_type}</Td>
                         <Td>{row.target_rate || "-"}</Td>
-                        <Td>{row.min_dedicated_trip || "-"}</Td>
                         <Td>{row.min_trip || "-"}</Td>
                       </tr>
                     ))}
@@ -1908,7 +1898,6 @@ function TicketDetail({ r }) {
     <div className="grid grid-cols-3 gap-6 text-sm">
       <div>
         <p className="text-xs text-ink-500 uppercase font-semibold mb-1">Trip commitment (per month)</p>
-        <p>Minimum dedicated trip: <span className="font-medium">{r.min_dedicated_trip ?? "-"}</span></p>
         <p>Minimum trip: <span className="font-medium">{r.min_trip ?? "-"}</span></p>
         {r.auto_closed_sla && (
           <p className="mt-2 text-xs text-amber-700">Auto-closed by SLA after 7 days with no VM action.</p>
