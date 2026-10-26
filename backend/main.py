@@ -827,7 +827,7 @@ async def _fetch_vm_request_raw(cur, request_id: int):
         "origin": row[0],
         "destination": row[1],
         "vehicle_type": row[2],
-        "target_rate": row[3],
+        "target_rate": float(row[3]) if row[3] is not None else None,
         "submission_row_id": row[4],
         "current_final_rate": float(row[5]) if row[5] is not None else None,
         "single_vendor_approved": bool(row[6]),
