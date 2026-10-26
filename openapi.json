@@ -256,6 +256,55 @@
         "summary": "VM: distinct vendor names in the master data, for the vendor dropdown.",
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VendorNameList"}}}} }
       }
+    },
+    "/api/profitability/candidates": {
+      "get": {
+        "summary": "Shippers that can be picked to go live: all tickets closed, at least one priced lane, not already live.",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GoLiveCandidateList"}}}} }
+      }
+    },
+    "/api/profitability/go-live": {
+      "post": {
+        "summary": "Confirm shippers as going live: freezes Sheet 1 (quotation cost) from their priced lanes and notifies VM.",
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GoLiveIn"}}} },
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrackerShipperList"}}}} }
+      }
+    },
+    "/api/profitability/tracker": {
+      "get": {
+        "summary": "Live shippers (the Tracker tab).",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrackerShipperList"}}}} }
+      }
+    },
+    "/api/profitability/undo-go-live": {
+      "post": {
+        "summary": "VM/superadmin: move shippers back to 'Pilih Go Live'; their sheets are kept.",
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GoLiveIn"}}} },
+        "responses": { "204": {"description": "No Content"} }
+      }
+    },
+    "/api/profitability/sheet": {
+      "get": {
+        "summary": "A live shipper's two sheets: quotation cost and orders.",
+        "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrackerSheet"}}}} }
+      }
+    },
+    "/api/profitability/quotation": {
+      "put": {
+        "summary": "Replace a live shipper's Sheet 1 (quotation cost) rows.",
+        "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuotationBody"}}} },
+        "responses": { "204": {"description": "No Content"} }
+      }
+    },
+    "/api/profitability/orders": {
+      "put": {
+        "summary": "Replace a live shipper's Sheet 2 (orders) rows.",
+        "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OrdersBody"}}} },
+        "responses": { "204": {"description": "No Content"} }
+      }
     }
   },
   "components": {
@@ -518,7 +567,72 @@
         "properties": { "reason": {"type": "string", "description": "'No other vendor serves this lane', 'Dedicated/contract rate', or 'Other: <text>'."} },
         "required": ["reason"]
       },
-      "VendorNameList": { "type": "object", "properties": {"vendors": {"type": "array", "items": {"type": "string"}}} }
+      "VendorNameList": { "type": "object", "properties": {"vendors": {"type": "array", "items": {"type": "string"}}} },
+      "GoLiveCandidate": {
+        "type": "object",
+        "properties": {
+          "shipper_name": { "type": "string" },
+          "sales_email": { "type": "string", "nullable": true },
+          "sales_pic": { "type": "string", "nullable": true },
+          "lane_count": { "type": "integer" },
+          "priced_lane_count": { "type": "integer" },
+          "last_submitted_at": { "type": "string" }
+        }
+      },
+      "GoLiveCandidateList": { "type": "object", "properties": {"shippers": {"type": "array", "items": {"$ref": "#/components/schemas/GoLiveCandidate"}}} },
+      "GoLiveIn": { "type": "object", "properties": {"shipper_names": {"type": "array", "items": {"type": "string"}}}, "required": ["shipper_names"] },
+      "TrackerShipper": {
+        "type": "object",
+        "properties": {
+          "shipper_name": { "type": "string" },
+          "sales_email": { "type": "string", "nullable": true },
+          "sales_pic": { "type": "string", "nullable": true },
+          "confirmed_by": { "type": "string" },
+          "confirmed_at": { "type": "string" },
+          "quotation_count": { "type": "integer" },
+          "order_count": { "type": "integer" }
+        }
+      },
+      "TrackerShipperList": { "type": "object", "properties": {"shippers": {"type": "array", "items": {"$ref": "#/components/schemas/TrackerShipper"}}} },
+      "QuotationLine": {
+        "type": "object",
+        "properties": {
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "vendor": { "type": "string", "nullable": true },
+          "cost": { "type": "number", "nullable": true },
+          "rate": { "type": "number", "nullable": true }
+        }
+      },
+      "OrderLine": {
+        "type": "object",
+        "properties": {
+          "order_no": { "type": "string", "nullable": true },
+          "order_date": { "type": "string", "nullable": true },
+          "origin": { "type": "string", "nullable": true },
+          "destination": { "type": "string", "nullable": true },
+          "vehicle_type": { "type": "string", "nullable": true },
+          "status": { "type": "string", "nullable": true, "enum": ["completed", "cancelled", null] },
+          "planned_vendor": { "type": "string", "nullable": true },
+          "est_cost": { "type": "number", "nullable": true },
+          "rate": { "type": "number", "nullable": true },
+          "actual_vendor": { "type": "string", "nullable": true },
+          "actual_invoice_cost": { "type": "number", "nullable": true },
+          "revenue_uang_jalan": { "type": "number", "nullable": true },
+          "revenue_overnight": { "type": "number", "nullable": true }
+        }
+      },
+      "TrackerSheet": {
+        "type": "object",
+        "properties": {
+          "shipper_name": { "type": "string" },
+          "quotation": { "type": "array", "items": {"$ref": "#/components/schemas/QuotationLine"} },
+          "orders": { "type": "array", "items": {"$ref": "#/components/schemas/OrderLine"} }
+        }
+      },
+      "QuotationBody": { "type": "object", "properties": {"rows": {"type": "array", "items": {"$ref": "#/components/schemas/QuotationLine"}}}, "required": ["rows"] },
+      "OrdersBody": { "type": "object", "properties": {"rows": {"type": "array", "items": {"$ref": "#/components/schemas/OrderLine"}}}, "required": ["rows"] }
     }
   }
 }

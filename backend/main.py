@@ -1699,3 +1699,355 @@ async def mark_submission_viewed(submission_id: int, request: Request):
                ON DUPLICATE KEY UPDATE last_viewed_at = NOW()""",
             (email, submission_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Profitability: sales pick which shippers go live; live shippers get a tracker
+# "spreadsheet" (Sheet 1 quotation cost frozen at go-live, Sheet 2 orders).
+# ---------------------------------------------------------------------------
+
+TRACKER_MAX_ROWS = 5000
+
+
+class GoLiveCandidate(BaseModel):
+    shipper_name: str
+    sales_email: str | None = None
+    sales_pic: str | None = None
+    lane_count: int
+    priced_lane_count: int
+    last_submitted_at: str
+
+
+class GoLiveCandidateList(BaseModel):
+    shippers: list[GoLiveCandidate]
+
+
+class GoLiveIn(BaseModel):
+    shipper_names: list[str]
+
+
+class TrackerShipper(BaseModel):
+    shipper_name: str
+    sales_email: str | None = None
+    sales_pic: str | None = None
+    confirmed_by: str
+    confirmed_at: str
+    quotation_count: int
+    order_count: int
+
+
+class TrackerShipperList(BaseModel):
+    shippers: list[TrackerShipper]
+
+
+class QuotationLine(BaseModel):
+    origin: str = ""
+    destination: str = ""
+    vehicle_type: str = ""
+    vendor: str | None = None
+    cost: float | None = None
+    rate: float | None = None
+
+
+class OrderLine(BaseModel):
+    order_no: str | None = None
+    order_date: str | None = None
+    origin: str | None = None
+    destination: str | None = None
+    vehicle_type: str | None = None
+    status: str | None = None
+    planned_vendor: str | None = None
+    est_cost: float | None = None
+    rate: float | None = None
+    actual_vendor: str | None = None
+    actual_invoice_cost: float | None = None
+    revenue_uang_jalan: float | None = None
+    revenue_overnight: float | None = None
+
+
+class TrackerSheet(BaseModel):
+    shipper_name: str
+    quotation: list[QuotationLine]
+    orders: list[OrderLine]
+
+
+class QuotationBody(BaseModel):
+    rows: list[QuotationLine]
+
+
+class OrdersBody(BaseModel):
+    rows: list[OrderLine]
+
+
+def _lane_key(origin: str, destination: str, vehicle: str) -> tuple[str, str, str]:
+    return (master_rates.norm(origin), master_rates.norm(destination), master_rates.norm(vehicle))
+
+
+async def _shipper_summaries(cur) -> dict[str, dict]:
+    """Per shipper (by the name sales typed): lane counts, newest submission, and
+    the number of still-open VM tickets. Newest submission decides the sales owner."""
+    await cur.execute(
+        """SELECT s.shipper_name, s.id, s.sales_email, s.sales_pic, s.created_at,
+                  COUNT(sr.id), COALESCE(SUM(sr.final_rate IS NOT NULL), 0)
+           FROM submissions s
+           LEFT JOIN submission_rows sr ON sr.submission_id = s.id
+           WHERE s.shipper_name IS NOT NULL AND s.shipper_name <> ''
+           GROUP BY s.shipper_name, s.id, s.sales_email, s.sales_pic, s.created_at
+           ORDER BY s.id ASC"""
+    )
+    out: dict[str, dict] = {}
+    for name, sid, sales_email, sales_pic, created_at, lanes, priced in await cur.fetchall():
+        d = out.setdefault(name, {"lanes": 0, "priced": 0, "open_tickets": 0})
+        d["lanes"] += lanes
+        d["priced"] += int(priced)
+        d.update(submission_id=sid, sales_email=sales_email, sales_pic=sales_pic, last=str(created_at))
+
+    await cur.execute(
+        """SELECT s.shipper_name, COUNT(*)
+           FROM vm_requests vr
+           JOIN submission_rows sr ON vr.submission_row_id = sr.id
+           JOIN submissions s ON sr.submission_id = s.id
+           WHERE vr.status IN ('open', 'in_progress') AND s.shipper_name IS NOT NULL
+           GROUP BY s.shipper_name"""
+    )
+    for name, n in await cur.fetchall():
+        if name in out:
+            out[name]["open_tickets"] = n
+    return out
+
+
+@app.get("/api/profitability/candidates", response_model=GoLiveCandidateList)
+async def go_live_candidates(request: Request):
+    """Shippers that can be picked to go live: every ticket closed and at least one
+    priced lane, and not already live."""
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        summaries = await _shipper_summaries(cur)
+        await cur.execute("SELECT shipper_name FROM go_live_shippers")
+        live = {r[0] for r in await cur.fetchall()}
+    shippers = [
+        GoLiveCandidate(
+            shipper_name=name,
+            sales_email=d["sales_email"],
+            sales_pic=d["sales_pic"],
+            lane_count=d["lanes"],
+            priced_lane_count=d["priced"],
+            last_submitted_at=d["last"],
+        )
+        for name, d in sorted(summaries.items(), key=lambda kv: kv[0].lower())
+        if name not in live and d["open_tickets"] == 0 and d["priced"] > 0
+    ]
+    return GoLiveCandidateList(shippers=shippers)
+
+
+@app.post("/api/profitability/go-live", response_model=TrackerShipperList, status_code=201)
+async def confirm_go_live(body: GoLiveIn, request: Request):
+    """Confirm shippers as going live. Freezes each shipper's Sheet 1 (quotation
+    cost) from its priced lanes — newest submission wins per OD + vehicle — and
+    tells VM. Re-confirming a shipper that was moved back keeps its existing
+    sheets and only adds lanes that aren't in Sheet 1 yet."""
+    email = await require_any_role(request)
+    names = [n for n in dict.fromkeys(body.shipper_names) if n]
+    if not names:
+        raise HTTPException(400, "Pick at least one shipper")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        summaries = await _shipper_summaries(cur)
+        await cur.execute("SELECT shipper_name FROM go_live_shippers")
+        live = {r[0] for r in await cur.fetchall()}
+        for name in names:
+            d = summaries.get(name)
+            if d is None:
+                raise HTTPException(404, f"Unknown shipper: {name}")
+            if name in live:
+                raise HTTPException(400, f"{name} is already live")
+            if d["open_tickets"] > 0 or d["priced"] == 0:
+                raise HTTPException(400, f"{name} still has open tickets or no priced lanes")
+
+        await cur.execute("SELECT email FROM user_roles WHERE role IN ('vm', 'superadmin')")
+        vm_emails = [r[0] for r in await cur.fetchall() if r[0] != email]
+
+        for name in names:
+            await cur.execute(
+                """SELECT sr.origin, sr.destination, sr.vehicle_type, sr.matched_vendor, sr.matched_cost, sr.final_rate
+                   FROM submission_rows sr JOIN submissions s ON sr.submission_id = s.id
+                   WHERE s.shipper_name = %s AND sr.final_rate IS NOT NULL
+                   ORDER BY s.id ASC, sr.id ASC""",
+                (name,),
+            )
+            latest: dict[tuple[str, str, str], tuple] = {}
+            for r in await cur.fetchall():
+                latest[_lane_key(r[0], r[1], r[2])] = r
+
+            await cur.execute(
+                "SELECT origin, destination, vehicle_type FROM tracker_quotation WHERE shipper_name = %s", (name,)
+            )
+            existing = {_lane_key(*r) for r in await cur.fetchall()}
+            await cur.execute("SELECT COALESCE(MAX(position), -1) FROM tracker_quotation WHERE shipper_name = %s", (name,))
+            position = (await cur.fetchone())[0] + 1
+            for key, r in latest.items():
+                if key in existing:
+                    continue
+                await cur.execute(
+                    """INSERT INTO tracker_quotation
+                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (name, position, r[0], r[1], r[2], r[3], r[4], r[5]),
+                )
+                position += 1
+
+            await cur.execute(
+                "INSERT INTO go_live_shippers (shipper_name, confirmed_by) VALUES (%s, %s)", (name, email)
+            )
+            for recipient in vm_emails:
+                await cur.execute(
+                    "INSERT INTO notifications (recipient_email, submission_id, message) VALUES (%s, %s, %s)",
+                    (recipient, summaries[name]["submission_id"], f"{email} confirmed go live: {name}"[:500]),
+                )
+        shippers = await _tracker_shippers(cur)
+    return TrackerShipperList(shippers=[s for s in shippers if s.shipper_name in names])
+
+
+async def _tracker_shippers(cur) -> list[TrackerShipper]:
+    summaries = await _shipper_summaries(cur)
+    await cur.execute(
+        """SELECT g.shipper_name, g.confirmed_by, g.confirmed_at,
+                  (SELECT COUNT(*) FROM tracker_quotation q WHERE q.shipper_name = g.shipper_name),
+                  (SELECT COUNT(*) FROM tracker_orders o WHERE o.shipper_name = g.shipper_name)
+           FROM go_live_shippers g ORDER BY g.confirmed_at DESC"""
+    )
+    return [
+        TrackerShipper(
+            shipper_name=r[0],
+            sales_email=summaries.get(r[0], {}).get("sales_email"),
+            sales_pic=summaries.get(r[0], {}).get("sales_pic"),
+            confirmed_by=r[1],
+            confirmed_at=str(r[2]),
+            quotation_count=r[3],
+            order_count=r[4],
+        )
+        for r in await cur.fetchall()
+    ]
+
+
+@app.get("/api/profitability/tracker", response_model=TrackerShipperList)
+async def tracker_shippers(request: Request):
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        shippers = await _tracker_shippers(cur)
+    return TrackerShipperList(shippers=shippers)
+
+
+@app.post("/api/profitability/undo-go-live", status_code=204)
+async def undo_go_live(body: GoLiveIn, request: Request):
+    """VM / superadmin: move shippers back to "Pilih Go Live". Sheets are kept."""
+    await require_role(request, "vm")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        for name in body.shipper_names:
+            await cur.execute("DELETE FROM go_live_shippers WHERE shipper_name = %s", (name,))
+
+
+async def _require_live(cur, shipper_name: str) -> None:
+    await cur.execute("SELECT 1 FROM go_live_shippers WHERE shipper_name = %s", (shipper_name,))
+    if not await cur.fetchone():
+        raise HTTPException(404, "Shipper is not live")
+
+
+def _num(v) -> float | None:
+    return float(v) if v is not None else None
+
+
+@app.get("/api/profitability/sheet", response_model=TrackerSheet)
+async def tracker_sheet(request: Request, shipper_name: str = Query(...)):
+    await require_any_role(request)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await _require_live(cur, shipper_name)
+        await cur.execute(
+            """SELECT origin, destination, vehicle_type, vendor, cost, rate
+               FROM tracker_quotation WHERE shipper_name = %s ORDER BY position, id""",
+            (shipper_name,),
+        )
+        quotation = [
+            QuotationLine(origin=r[0], destination=r[1], vehicle_type=r[2], vendor=r[3], cost=_num(r[4]), rate=_num(r[5]))
+            for r in await cur.fetchall()
+        ]
+        await cur.execute(
+            """SELECT order_no, order_date, origin, destination, vehicle_type, status, planned_vendor, est_cost,
+                      rate, actual_vendor, actual_invoice_cost, revenue_uang_jalan, revenue_overnight
+               FROM tracker_orders WHERE shipper_name = %s ORDER BY position, id""",
+            (shipper_name,),
+        )
+        orders = [
+            OrderLine(
+                order_no=r[0], order_date=str(r[1]) if r[1] else None, origin=r[2], destination=r[3],
+                vehicle_type=r[4], status=r[5], planned_vendor=r[6], est_cost=_num(r[7]), rate=_num(r[8]),
+                actual_vendor=r[9], actual_invoice_cost=_num(r[10]), revenue_uang_jalan=_num(r[11]),
+                revenue_overnight=_num(r[12]),
+            )
+            for r in await cur.fetchall()
+        ]
+    return TrackerSheet(shipper_name=shipper_name, quotation=quotation, orders=orders)
+
+
+@app.put("/api/profitability/quotation", status_code=204)
+async def save_tracker_quotation(body: QuotationBody, request: Request, shipper_name: str = Query(...)):
+    await require_any_role(request)
+    rows = [r for r in body.rows if r.origin.strip() or r.destination.strip() or r.vehicle_type.strip()]
+    if len(rows) > TRACKER_MAX_ROWS:
+        raise HTTPException(400, f"At most {TRACKER_MAX_ROWS} rows")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await _require_live(cur, shipper_name)
+        await conn.begin()
+        try:
+            await cur.execute("DELETE FROM tracker_quotation WHERE shipper_name = %s", (shipper_name,))
+            for i, r in enumerate(rows):
+                await cur.execute(
+                    """INSERT INTO tracker_quotation
+                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (shipper_name, i, r.origin.strip(), r.destination.strip(), r.vehicle_type.strip(),
+                     (r.vendor or "").strip() or None, r.cost, r.rate),
+                )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise
+
+
+def _parse_date(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+@app.put("/api/profitability/orders", status_code=204)
+async def save_tracker_orders(body: OrdersBody, request: Request, shipper_name: str = Query(...)):
+    await require_any_role(request)
+    if len(body.rows) > TRACKER_MAX_ROWS:
+        raise HTTPException(400, f"At most {TRACKER_MAX_ROWS} rows")
+    clean = lambda v: (v or "").strip() or None
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await _require_live(cur, shipper_name)
+        await conn.begin()
+        try:
+            await cur.execute("DELETE FROM tracker_orders WHERE shipper_name = %s", (shipper_name,))
+            for i, r in enumerate(body.rows):
+                if r.status not in (None, "", "completed", "cancelled"):
+                    raise HTTPException(400, "status must be completed or cancelled")
+                await cur.execute(
+                    """INSERT INTO tracker_orders
+                       (shipper_name, position, order_no, order_date, origin, destination, vehicle_type, status,
+                        planned_vendor, est_cost, rate, actual_vendor, actual_invoice_cost,
+                        revenue_uang_jalan, revenue_overnight)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (shipper_name, i, clean(r.order_no), _parse_date(r.order_date), clean(r.origin),
+                     clean(r.destination), clean(r.vehicle_type), r.status or None, clean(r.planned_vendor),
+                     r.est_cost, r.rate, clean(r.actual_vendor), r.actual_invoice_cost,
+                     r.revenue_uang_jalan, r.revenue_overnight),
+                )
+            await conn.commit()
+        except Exception:
+            await conn.rollback()
+            raise

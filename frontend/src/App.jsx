@@ -160,7 +160,7 @@ const userLabel = (u) => u.display_name || u.email;
 // from before Sales PIC became a dropdown) the name that was typed in.
 const salesKeyOf = (x) => (x.sales_email ? `e:${x.sales_email}` : x.sales_pic ? `l:${x.sales_pic}` : "");
 
-function FilterBar({ items, shipper, setShipper, sales, setSales }) {
+function FilterBar({ items, shipper, setShipper, sales, setSales, hideShipper, children }) {
   const users = useDirectoryUsers();
   const shippers = [...new Set(items.map((x) => x.shipper_name).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   const salesOptions = [];
@@ -177,18 +177,21 @@ function FilterBar({ items, shipper, setShipper, sales, setSales }) {
   salesOptions.sort((a, b) => a.label.localeCompare(b.label));
   return (
     <div className="flex gap-3 mb-4">
-      <select
-        className="border border-ink-200 rounded px-3 py-2 text-sm bg-white"
-        value={shipper}
-        onChange={(e) => setShipper(e.target.value)}
-      >
-        <option value="">All shippers</option>
-        {shippers.map((n) => (
-          <option key={n} value={n}>
-            {n}
-          </option>
-        ))}
-      </select>
+      {children}
+      {!hideShipper && (
+        <select
+          className="border border-ink-200 rounded px-3 py-2 text-sm bg-white"
+          value={shipper}
+          onChange={(e) => setShipper(e.target.value)}
+        >
+          <option value="">All shippers</option>
+          {shippers.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      )}
       <select
         className="border border-ink-200 rounded px-3 py-2 text-sm bg-white"
         value={sales}
@@ -2319,6 +2322,562 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
 }
 
 // ---------------------------------------------------------------------------
+// Profitability: pick shippers to go live, then a per-shipper tracker "spreadsheet"
+// ---------------------------------------------------------------------------
+
+const PPN_FACTOR = 1.1;
+const ORDER_STATUS_OPTIONS = [
+  { value: "", label: "-" },
+  { value: "completed", label: "Completed" },
+  { value: "cancelled", label: "Cancelled" },
+];
+
+const toNum = (v) => {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+};
+const marginPct = (rate, cost) => {
+  const r = toNum(rate);
+  const c = toNum(cost);
+  return r && c !== null ? ((r - c) / r) * 100 : null;
+};
+const fmtPct = (v) => (v === null ? "-" : `${v.toFixed(1)}%`);
+const laneKeyFe = (o, d, v) =>
+  [o, d, v].map((x) => String(x || "").trim().toLowerCase().replace(/\s+/g, " ")).join("|");
+const str = (v) => (v === null || v === undefined ? "" : String(v));
+
+// Parse a pasted cell for a column type (Excel/Sheets paste → grid).
+function parsePasted(raw, type) {
+  const t = raw.trim();
+  if (type === "number") return t.replace(/[^0-9-]/g, "");
+  if (type === "date") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    const d = new Date(t);
+    if (Number.isNaN(d.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  return t;
+}
+
+// Editable table that behaves like a small spreadsheet: type in any cell, paste a block
+// from Excel/Sheets, add or delete rows. `columns[].computed(row)` makes a read-only cell.
+function EditableGrid({ columns, rows, setRows, blankRow, onCellEdited, rowError }) {
+  const editable = columns.filter((c) => !c.computed);
+
+  const setCell = (ri, key, value) =>
+    setRows((rs) =>
+      rs.map((r, i) => {
+        if (i !== ri) return r;
+        const next = { ...r, [key]: value };
+        return onCellEdited ? onCellEdited(next, key) : next;
+      })
+    );
+
+  const onPaste = (e, ri, key) => {
+    const text = e.clipboardData.getData("text");
+    if (!/[\t\n]/.test(text.replace(/\r?\n$/, ""))) return; // plain single value: normal paste
+    e.preventDefault();
+    const lines = text.replace(/\r/g, "").replace(/\n$/, "").split("\n").map((l) => l.split("\t"));
+    const startCol = editable.findIndex((c) => c.key === key);
+    setRows((rs) => {
+      const out = rs.map((r) => ({ ...r }));
+      lines.forEach((cells, li) => {
+        const target = ri + li;
+        while (out.length <= target) out.push(blankRow());
+        let row = out[target];
+        cells.forEach((cell, ci) => {
+          const col = editable[startCol + ci];
+          if (!col) return;
+          row = { ...row, [col.key]: parsePasted(cell, col.type) };
+          if (onCellEdited) row = onCellEdited(row, col.key);
+        });
+        out[target] = row;
+      });
+      return out;
+    });
+  };
+
+  return (
+    <div className="overflow-x-auto border border-ink-100 rounded-lg bg-white">
+      <table className="w-full">
+        <thead>
+          <tr>
+            <Th>#</Th>
+            {columns.map((c) => (
+              <Th key={c.key}>{c.label}</Th>
+            ))}
+            <Th></Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => {
+            const err = rowError ? rowError(row) : null;
+            return (
+              <tr key={ri} className={err ? "bg-red-50" : ""}>
+                <Td className="text-ink-400 text-xs">{ri + 1}</Td>
+                {columns.map((c) => (
+                  <td key={c.key} className="px-1 py-1 border-t border-ink-100">
+                    {c.computed ? (
+                      <span className={`block px-2 py-1 text-sm whitespace-nowrap ${c.className || "text-ink-600"}`}>
+                        {c.computed(row)}
+                      </span>
+                    ) : c.type === "select" ? (
+                      <select
+                        className="w-full border border-transparent hover:border-ink-200 rounded px-1 py-1 text-sm bg-transparent"
+                        value={str(row[c.key])}
+                        onChange={(e) => setCell(ri, c.key, e.target.value)}
+                      >
+                        {c.options.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={c.type === "date" ? "date" : "text"}
+                        inputMode={c.type === "number" ? "numeric" : undefined}
+                        list={c.list}
+                        className={`border border-transparent hover:border-ink-200 focus:border-brand-600 rounded px-2 py-1 text-sm bg-transparent ${
+                          c.type === "number" ? "w-28 text-right" : c.type === "date" ? "w-36" : "w-36"
+                        }`}
+                        value={str(row[c.key])}
+                        onChange={(e) =>
+                          setCell(ri, c.key, c.type === "number" ? e.target.value.replace(/[^0-9-]/g, "") : e.target.value)
+                        }
+                        onPaste={(e) => onPaste(e, ri, c.key)}
+                      />
+                    )}
+                  </td>
+                ))}
+                <td className="px-1 py-1 border-t border-ink-100 whitespace-nowrap">
+                  {err && <span className="text-xs text-red-600 mr-2">{err}</span>}
+                  <button
+                    onClick={() => setRows((rs) => rs.filter((_, i) => i !== ri))}
+                    className="text-ink-400 hover:text-red-600 text-sm px-1"
+                    title="Delete row"
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+          {rows.length === 0 && (
+            <tr>
+              <Td className="text-ink-400" colSpan={columns.length + 2}>
+                No rows yet.
+              </Td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div className="px-3 py-2 border-t border-ink-100 flex items-center gap-4">
+        <button onClick={() => setRows((rs) => [...rs, blankRow()])} className="text-sm text-brand-600 hover:underline">
+          + Add row
+        </button>
+        <span className="text-xs text-ink-400">Tip: copy a block from Excel / Google Sheets and paste it into any cell.</span>
+      </div>
+    </div>
+  );
+}
+
+const blankQuotationRow = () => ({ origin: "", destination: "", vehicle_type: "", vendor: "", cost: "", rate: "" });
+const blankOrderRow = () => ({
+  order_no: "", order_date: "", origin: "", destination: "", vehicle_type: "", status: "",
+  planned_vendor: "", est_cost: "", rate: "", actual_vendor: "", actual_invoice_cost: "",
+  revenue_uang_jalan: "", revenue_overnight: "",
+});
+
+const NUMERIC_QUOTATION = ["cost", "rate"];
+const NUMERIC_ORDER = ["est_cost", "rate", "actual_invoice_cost", "revenue_uang_jalan", "revenue_overnight"];
+
+function TrackerSheetView({ shipperName, canUndo, onBack, onUndone }) {
+  const [sheet, setSheet] = useState("quotation"); // "quotation" | "orders"
+  const [quotation, setQuotation] = useState(null);
+  const [orders, setOrders] = useState(null);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/profitability/sheet?shipper_name=${encodeURIComponent(shipperName)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Could not load this shipper's sheet"))))
+      .then((d) => {
+        setQuotation(d.quotation.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, str(v)]))));
+        setOrders(d.orders.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, str(v)]))));
+      })
+      .catch((e) => setMessage({ error: e.message }));
+  }, [shipperName]);
+
+  if (!quotation || !orders) {
+    return <p className="text-sm text-ink-400">{message?.error || "Loading…"}</p>;
+  }
+
+  const quotationMap = {};
+  for (const q of quotation) quotationMap[laneKeyFe(q.origin, q.destination, q.vehicle_type)] = q;
+  const uniq = (key) => [...new Set(quotation.map((q) => q[key].trim()).filter(Boolean))].sort();
+
+  const updateQuotation = (fn) => {
+    setDirty(true);
+    setMessage(null);
+    setQuotation(fn);
+  };
+  const updateOrders = (fn) => {
+    setDirty(true);
+    setMessage(null);
+    setOrders(fn);
+  };
+
+  // Typing an OD + vehicle that exists in Sheet 1 fills in vendor, cost and rate.
+  const autofill = (row, key) => {
+    if (!["origin", "destination", "vehicle_type"].includes(key)) return row;
+    const q = quotationMap[laneKeyFe(row.origin, row.destination, row.vehicle_type)];
+    return q ? { ...row, planned_vendor: q.vendor, est_cost: q.cost, rate: q.rate } : row;
+  };
+
+  const orderError = (row) => {
+    if (!row.origin.trim() || !row.destination.trim() || !row.vehicle_type.trim()) return null;
+    return quotationMap[laneKeyFe(row.origin, row.destination, row.vehicle_type)] ? null : "Tidak ada di quotation";
+  };
+
+  const quotationColumns = [
+    { key: "origin", label: "Origin", type: "text", list: "dl-q-origin" },
+    { key: "destination", label: "Destination", type: "text", list: "dl-q-destination" },
+    { key: "vehicle_type", label: "Vehicle", type: "text", list: "dl-q-vehicle" },
+    { key: "vendor", label: "Vendor", type: "text" },
+    { key: "cost", label: "Cost", type: "number" },
+    { key: "rate", label: "Rate", type: "number" },
+    { key: "margin", label: "Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.cost)) },
+  ];
+  const orderColumns = [
+    { key: "order_no", label: "Order No.", type: "text" },
+    { key: "order_date", label: "Order Date", type: "date" },
+    { key: "origin", label: "Origin", type: "text", list: "dl-q-origin" },
+    { key: "destination", label: "Destination", type: "text", list: "dl-q-destination" },
+    { key: "vehicle_type", label: "Vehicle", type: "text", list: "dl-q-vehicle" },
+    { key: "status", label: "Status", type: "select", options: ORDER_STATUS_OPTIONS },
+    { key: "planned_vendor", label: "Planned Vendor", type: "text" },
+    { key: "est_cost", label: "Estimated Cost", type: "number" },
+    { key: "rate", label: "Rate", type: "number" },
+    { key: "actual_vendor", label: "Actual Vendor", type: "text" },
+    { key: "actual_invoice_cost", label: "Actual Invoice Cost", type: "number" },
+    { key: "revenue_uang_jalan", label: "Revenue (Uang Jalan)", type: "number" },
+    { key: "revenue_overnight", label: "Revenue (Overnight)", type: "number" },
+    {
+      key: "total_revenue",
+      label: "Total Revenue (incl. PPN)",
+      computed: (r) =>
+        toNum(r.rate) === null
+          ? "-"
+          : fmt(Math.round((toNum(r.rate) + (toNum(r.revenue_uang_jalan) || 0) + (toNum(r.revenue_overnight) || 0)) * PPN_FACTOR)),
+    },
+    { key: "est_margin", label: "Est. Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.est_cost)) },
+    { key: "actual_margin", label: "Actual Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.actual_invoice_cost)) },
+  ];
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    const toBody = (rows, numeric) =>
+      rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, numeric.includes(k) ? toNum(v) : v === "" ? null : v])));
+    const put = (path, rows) =>
+      fetch(`/api/profitability/${path}?shipper_name=${encodeURIComponent(shipperName)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows }),
+      });
+    try {
+      const qBody = toBody(quotation, NUMERIC_QUOTATION).map((r) => ({ ...r, origin: r.origin || "", destination: r.destination || "", vehicle_type: r.vehicle_type || "" }));
+      const [qr, or] = [await put("quotation", qBody), await put("orders", toBody(orders, NUMERIC_ORDER))];
+      if (!qr.ok || !or.ok) throw new Error("Save failed");
+      setDirty(false);
+      setMessage({ ok: "Saved." });
+    } catch (e) {
+      setMessage({ error: e.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const undo = async () => {
+    if (!confirm(`Move ${shipperName} back to "Pilih Go Live"? Its sheets are kept.`)) return;
+    await fetch("/api/profitability/undo-go-live", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shipper_names: [shipperName] }),
+    });
+    onUndone();
+  };
+
+  return (
+    <div>
+      <datalist id="dl-q-origin">{uniq("origin").map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-q-destination">{uniq("destination").map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="dl-q-vehicle">{uniq("vehicle_type").map((v) => <option key={v} value={v} />)}</datalist>
+
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={onBack} className="text-sm text-brand-600 hover:underline">
+          ← Tracker
+        </button>
+        <h2 className="font-semibold text-lg">{shipperName}</h2>
+        <span className="flex-1" />
+        {message?.error && <span className="text-sm text-red-600">{message.error}</span>}
+        {message?.ok && <span className="text-sm text-green-600">{message.ok}</span>}
+        {dirty && <span className="text-xs text-amber-600">Unsaved changes</span>}
+        {canUndo && (
+          <button onClick={undo} className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50">
+            Move back to Pilih Go Live
+          </button>
+        )}
+        <button
+          onClick={save}
+          disabled={saving || !dirty}
+          className="px-4 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+
+      <div className="flex gap-1 mb-3">
+        {[
+          { key: "quotation", label: `Quotation Cost (${quotation.length})` },
+          { key: "orders", label: `Orders (${orders.length})` },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setSheet(t.key)}
+            className={`px-3 py-1.5 rounded-t text-sm font-medium ${
+              sheet === t.key ? "bg-white border border-b-0 border-ink-200 text-brand-700" : "bg-ink-100 text-ink-500"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sheet === "quotation" ? (
+        <div>
+          <p className="text-xs text-ink-500 mb-2">
+            Frozen from this shipper's priced lanes when it went live (cost, not the quoted price list). Edit freely —
+            Sheet "Orders" looks lanes up here.
+          </p>
+          <EditableGrid columns={quotationColumns} rows={quotation} setRows={updateQuotation} blankRow={blankQuotationRow} />
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs text-ink-500 mb-2">
+            Type origin, destination and vehicle: when the lane is in Quotation Cost, vendor, estimated cost and rate fill in
+            automatically. Margin % = (rate − cost) ÷ rate. Total revenue = (rate + uang jalan + overnight) × 1.1 (PPN).
+          </p>
+          <EditableGrid
+            columns={orderColumns}
+            rows={orders}
+            setRows={updateOrders}
+            blankRow={blankOrderRow}
+            onCellEdited={autofill}
+            rowError={orderError}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProfitabilityView({ me }) {
+  const users = useDirectoryUsers();
+  const [tab, setTab] = useState("select"); // "select" | "tracker"
+  const [candidates, setCandidates] = useState([]);
+  const [tracker, setTracker] = useState([]);
+  const [picked, setPicked] = useState(new Set());
+  const [search, setSearch] = useState("");
+  const [salesFilter, setSalesFilter] = useState("");
+  const [openShipper, setOpenShipper] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const canUndo = me.role === "vm" || me.role === "superadmin";
+
+  const load = () => {
+    fetch("/api/profitability/candidates").then((r) => r.json()).then((d) => setCandidates(d.shippers || []));
+    fetch("/api/profitability/tracker").then((r) => r.json()).then((d) => setTracker(d.shippers || []));
+  };
+  useEffect(load, []);
+
+  const salesLabel = (x) =>
+    x.sales_email ? userLabel(users.find((u) => u.email === x.sales_email) || { email: x.sales_email }) : x.sales_pic || "-";
+
+  const s = search.trim().toLowerCase();
+  const filtered = candidates.filter(
+    (c) => (!s || c.shipper_name.toLowerCase().includes(s)) && (!salesFilter || salesKeyOf(c) === salesFilter)
+  );
+  const allPicked = filtered.length > 0 && filtered.every((c) => picked.has(c.shipper_name));
+
+  const toggle = (name) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+
+  const confirmGoLive = async () => {
+    const names = [...picked];
+    if (names.length === 0) return;
+    if (!confirm(`Confirm go live for ${names.length} shipper(s)?\n\n${names.join("\n")}`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/profitability/go-live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shipper_names: names }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Could not confirm go live");
+      }
+      setPicked(new Set());
+      load();
+      setTab("tracker");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (openShipper) {
+    return (
+      <TrackerSheetView
+        shipperName={openShipper}
+        canUndo={canUndo}
+        onBack={() => {
+          setOpenShipper(null);
+          load();
+        }}
+        onUndone={() => {
+          setOpenShipper(null);
+          setTab("select");
+          load();
+        }}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-6">
+        {[
+          { key: "select", label: `Pilih Go Live (${candidates.length})` },
+          { key: "tracker", label: `Tracker (${tracker.length})` },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 rounded text-sm font-medium ${
+              tab === t.key ? "bg-brand-600 text-white" : "bg-white border border-gray-200 text-gray-600"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "select" ? (
+        <div>
+          <p className="text-sm text-ink-500 mb-3">
+            Shippers whose requests are all closed. Tick the ones that are going live and confirm — they move to Tracker.
+          </p>
+          <FilterBar items={candidates} sales={salesFilter} setSales={setSalesFilter} hideShipper>
+            <input
+              className="flex-1 border border-ink-200 rounded px-3 py-2 text-sm"
+              placeholder="Search shipper name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </FilterBar>
+          {error && <p className="text-sm text-red-600 mb-2">{error}</p>}
+          <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <Th>
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      disabled={filtered.length === 0}
+                      onChange={() =>
+                        setPicked((p) => {
+                          const n = new Set(p);
+                          filtered.forEach((c) => (allPicked ? n.delete(c.shipper_name) : n.add(c.shipper_name)));
+                          return n;
+                        })
+                      }
+                    />
+                  </Th>
+                  <Th>Shipper</Th>
+                  <Th>Sales</Th>
+                  <Th>Priced lanes</Th>
+                  <Th>Last submitted</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c.shipper_name}>
+                    <Td>
+                      <input type="checkbox" checked={picked.has(c.shipper_name)} onChange={() => toggle(c.shipper_name)} />
+                    </Td>
+                    <Td className="font-medium">{c.shipper_name}</Td>
+                    <Td className="text-ink-500">{salesLabel(c)}</Td>
+                    <Td>
+                      {c.priced_lane_count} / {c.lane_count}
+                    </Td>
+                    <Td className="text-ink-500">{c.last_submitted_at.slice(0, 10)}</Td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <Td className="text-ink-400" colSpan={5}>
+                      No shippers ready to go live.
+                    </Td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <button
+            onClick={confirmGoLive}
+            disabled={busy || picked.size === 0}
+            className="mt-4 px-4 py-2 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {busy ? "Confirming…" : `Confirm go live (${picked.size})`}
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {tracker.map((t) => (
+            <button
+              key={t.shipper_name}
+              onClick={() => setOpenShipper(t.shipper_name)}
+              className="w-full text-left bg-white rounded-xl border border-ink-100 shadow-sm px-4 py-3 hover:bg-ink-50"
+            >
+              <span className="font-semibold text-sm">{t.shipper_name}</span>
+              <span className="ml-2 text-xs text-ink-400">{salesLabel(t)}</span>
+              <span className="ml-3 text-xs text-ink-400">
+                {t.quotation_count} lane(s) in quotation · {t.order_count} order(s) · live since {t.confirmed_at.slice(0, 10)}
+              </span>
+            </button>
+          ))}
+          {tracker.length === 0 && <p className="text-sm text-ink-400">No shippers are live yet.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Superadmin
 // ---------------------------------------------------------------------------
 
@@ -2507,7 +3066,7 @@ function BrandedMessage({ title, children }) {
   );
 }
 
-const VIEW_LABEL = { sales: "Sales", vm: "Vendor Mgmt", admin: "Admin" };
+const VIEW_LABEL = { sales: "Sales", vm: "Vendor Mgmt", admin: "Admin", profitability: "Profitability" };
 
 function NotificationBell({ onNavigate }) {
   const [open, setOpen] = useState(false);
@@ -2607,7 +3166,7 @@ function AppInner() {
   }
 
   const isSuperadmin = me.role === "superadmin";
-  const activeView = isSuperadmin ? view : me.role;
+  const activeView = view === "profitability" ? "profitability" : isSuperadmin ? view : me.role;
 
   return (
     <div className="min-h-screen bg-ink-50">
@@ -2637,23 +3196,17 @@ function AppInner() {
         <div className="bg-black/25 backdrop-blur-sm relative z-10">
           <div className="max-w-6xl mx-auto px-6 py-2 flex items-center justify-between">
             <div className="flex gap-1">
-              {isSuperadmin ? (
-                ["sales", "vm", "admin"].map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setView(v)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide transition ${
-                      activeView === v ? "bg-white text-brand-700 shadow" : "text-white/85 hover:bg-white/15"
-                    }`}
-                  >
-                    {VIEW_LABEL[v]}
-                  </button>
-                ))
-              ) : (
-                <span className="px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide bg-white text-brand-700">
-                  {VIEW_LABEL[activeView]}
-                </span>
-              )}
+              {(isSuperadmin ? ["sales", "vm", "admin", "profitability"] : [me.role, "profitability"]).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide transition ${
+                    activeView === v ? "bg-white text-brand-700 shadow" : "text-white/85 hover:bg-white/15"
+                  }`}
+                >
+                  {VIEW_LABEL[v]}
+                </button>
+              ))}
             </div>
             <div className="text-xs text-white/85">
               {me.email}
@@ -2671,6 +3224,7 @@ function AppInner() {
           <VmView focusSubmissionId={focusSubmissionId} onFocusHandled={() => setFocusSubmissionId(null)} />
         )}
         {activeView === "admin" && <AdminPanel />}
+        {activeView === "profitability" && <ProfitabilityView me={me} />}
       </main>
 
       <footer className="max-w-[1400px] mx-auto px-6 pb-8 flex items-center justify-between text-[11px] text-ink-400">
