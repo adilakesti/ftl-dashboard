@@ -555,7 +555,7 @@ async def list_vm_requests(request: Request):
     return VmRequestList(requests=[_to_vm_request(r) for r in rows])
 
 
-VM_STATUSES = ("open", "in_progress", "resolved", "closed_no_vendor")
+VM_STATUSES = ("open", "in_progress", "resolved", "closed_no_vendor", "closed_no_lower_rate")
 
 
 class VmRequestUpdate(BaseModel):
@@ -596,13 +596,21 @@ async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Req
 
 async def _fetch_vm_request_raw(cur, request_id: int):
     await cur.execute(
-        "SELECT origin, destination, vehicle_type, target_rate, submission_row_id FROM vm_requests WHERE id = %s",
+        """SELECT origin, destination, vehicle_type, target_rate, submission_row_id, current_final_rate
+           FROM vm_requests WHERE id = %s""",
         (request_id,),
     )
     row = await cur.fetchone()
     if not row:
         raise HTTPException(404, "Request not found")
-    return {"origin": row[0], "destination": row[1], "vehicle_type": row[2], "target_rate": row[3], "submission_row_id": row[4]}
+    return {
+        "origin": row[0],
+        "destination": row[1],
+        "vehicle_type": row[2],
+        "target_rate": row[3],
+        "submission_row_id": row[4],
+        "current_final_rate": float(row[5]) if row[5] is not None else None,
+    }
 
 
 async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float]], resolved_by: str) -> VmRequest:
@@ -734,21 +742,40 @@ async def resolve_vm_request_upload(request_id: int, request: Request, file: Upl
 
 @app.post("/api/vm/requests/{request_id}/close-no-vendor", response_model=VmRequest)
 async def close_vm_request_no_vendor(request_id: int, request: Request):
+    """VM declines to find a vendor for this lane. Two distinct cases:
+      - The lane never had a rate (a "missing lane" request): close as
+        closed_no_vendor and wipe the row's Final Rate — there is genuinely
+        no price to show.
+      - The lane already had a Final Rate and sales was asking VM for a
+        LOWER one (current_final_rate was set when this ticket was raised):
+        close as closed_no_lower_rate, and leave the existing Final Rate
+        on the submission row untouched — sales still has a usable rate,
+        it just didn't get any cheaper."""
     await require_role(request, "vm")
     pool = db.pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
         req = await _fetch_vm_request_raw(cur, request_id)
-        await cur.execute(
-            """UPDATE vm_requests SET status = 'closed_no_vendor', resolved_vendor = NULL,
-               resolved_cost = NULL, current_final_rate = NULL WHERE id = %s""",
-            (request_id,),
-        )
-        if req["submission_row_id"]:
+        had_rate = req["current_final_rate"] is not None
+        new_status = "closed_no_lower_rate" if had_rate else "closed_no_vendor"
+
+        if had_rate:
             await cur.execute(
-                """UPDATE submission_rows SET final_rate = NULL, remarks = %s, matched_vendor = NULL,
-                   matched_cost = NULL WHERE id = %s""",
-                ("No vendor available (VM)", req["submission_row_id"]),
+                "UPDATE vm_requests SET status = %s, resolved_vendor = NULL, resolved_cost = NULL WHERE id = %s",
+                (new_status, request_id),
             )
+        else:
+            await cur.execute(
+                """UPDATE vm_requests SET status = %s, resolved_vendor = NULL,
+                   resolved_cost = NULL, current_final_rate = NULL WHERE id = %s""",
+                (new_status, request_id),
+            )
+            if req["submission_row_id"]:
+                await cur.execute(
+                    """UPDATE submission_rows SET final_rate = NULL, remarks = %s, matched_vendor = NULL,
+                       matched_cost = NULL WHERE id = %s""",
+                    ("No vendor available (VM)", req["submission_row_id"]),
+                )
+
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
     return _to_vm_request(row)
@@ -796,7 +823,7 @@ async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
         await cur.execute(
             """SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
                FROM vm_requests
-               WHERE status IN ('open', 'in_progress') AND current_final_rate IS NOT NULL
+               WHERE status IN ('open', 'in_progress', 'closed_no_lower_rate') AND current_final_rate IS NOT NULL
                GROUP BY origin, destination, vehicle_type
                ORDER BY c DESC LIMIT %s""",
             (limit,),

@@ -49,6 +49,7 @@ const STATUS_LABEL = {
   in_progress: "In Progress",
   resolved: "Resolved",
   closed_no_vendor: "No Vendor Available",
+  closed_no_lower_rate: "No Lower Rate Found",
 };
 
 function fmt(n) {
@@ -288,27 +289,44 @@ function Discussion({ endpoint, id }) {
 
 const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
-function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
+function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
   const [expanded, setExpanded] = useState(false);
   const first = lanes[0];
-  const submissionId = first.submission_id;
-  const shipperName = first.shipper_name || UNKNOWN_SHIPPER_SALES;
+
+  const bySubmission = {};
+  for (const l of lanes) {
+    const cur = bySubmission[l.submission_id];
+    if (!cur || new Date(l.submitted_at) > new Date(cur)) bySubmission[l.submission_id] = l.submitted_at;
+  }
+  const submissions = Object.entries(bySubmission)
+    .map(([id, date]) => ({ id: Number(id), date }))
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+  const primarySubmissionId = submissions[0]?.id;
+  const anchorId = `shipper-group-${encodeURIComponent(shipperName)}`;
+
+  const toggleAndOpen = () => {
+    setExpanded((v) => {
+      const next = !v;
+      if (next && primarySubmissionId) onOpenDiscussion(`/api/submissions/${primarySubmissionId}/comments`);
+      return next;
+    });
+  };
 
   useEffect(() => {
-    if (focusSubmissionId !== submissionId) return;
+    if (!focusSubmissionId || !submissions.some((sub) => sub.id === focusSubmissionId)) return;
     setExpanded(true);
-    onOpenDiscussion(`/api/submissions/${submissionId}/comments`);
+    onOpenDiscussion(`/api/submissions/${focusSubmissionId}/comments`);
     setTimeout(() => {
-      document.getElementById(`shipper-group-${submissionId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 100);
     onFocusHandled();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSubmissionId]);
 
   return (
-    <div id={`shipper-group-${submissionId}`} className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
+    <div id={anchorId} className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 hover:bg-ink-50">
-        <button onClick={() => setExpanded((v) => !v)} className="flex-1 text-left">
+        <button onClick={toggleAndOpen} className="flex-1 text-left">
           <span className="text-sm">
             <span className="font-semibold">{shipperName}</span>
             {first.sales_pic && <span className="ml-2 text-xs text-ink-400">{first.sales_pic}</span>}
@@ -323,19 +341,25 @@ function LaneSubmissionGroup({ lanes, kind, focusSubmissionId, onFocusHandled, o
           </span>
         </button>
         <button
-          onClick={() => onOpenDiscussion(`/api/submissions/${submissionId}/comments`)}
+          onClick={() => primarySubmissionId && onOpenDiscussion(`/api/submissions/${primarySubmissionId}/comments`)}
           className="text-xs px-2.5 py-1 rounded border border-ink-200 hover:bg-white mr-3"
         >
           💬 Discussion
         </button>
-        <a
-          href={`/api/submissions/${submissionId}/quotation.xlsx`}
-          onClick={(e) => e.stopPropagation()}
-          className="text-xs px-2.5 py-1 rounded border border-ink-200 hover:bg-white mr-3"
-        >
-          Download quotation
-        </a>
-        <button onClick={() => setExpanded((v) => !v)} className="text-xs text-ink-400">
+        <div className="flex gap-1 mr-3">
+          {submissions.map((sub) => (
+            <a
+              key={sub.id}
+              href={`/api/submissions/${sub.id}/quotation.xlsx`}
+              onClick={(e) => e.stopPropagation()}
+              title={`Quotation for the ${sub.date} submission`}
+              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-white whitespace-nowrap"
+            >
+              Quotation {sub.date.slice(0, 10)}
+            </a>
+          ))}
+        </div>
+        <button onClick={toggleAndOpen} className="text-xs text-ink-400">
           {expanded ? "Collapse" : "Expand"}
         </button>
       </div>
@@ -386,9 +410,14 @@ function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHa
 
   const groups = {};
   for (const l of filtered) {
-    (groups[l.submission_id] = groups[l.submission_id] || []).push(l);
+    const key = l.shipper_name || UNKNOWN_SHIPPER_SALES;
+    (groups[key] = groups[key] || []).push(l);
   }
-  const submissionIds = Object.keys(groups).sort((a, b) => Number(b) - Number(a));
+  const shipperNames = Object.keys(groups).sort((a, b) => {
+    if (a === UNKNOWN_SHIPPER_SALES) return 1;
+    if (b === UNKNOWN_SHIPPER_SALES) return -1;
+    return a.localeCompare(b);
+  });
 
   return (
     <div>
@@ -399,17 +428,18 @@ function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHa
         onChange={(e) => setQ(e.target.value)}
       />
       <div className="space-y-2">
-        {submissionIds.map((id) => (
-          <LaneSubmissionGroup
-            key={id}
-            lanes={groups[id]}
+        {shipperNames.map((name) => (
+          <ShipperLaneGroup
+            key={name}
+            shipperName={name}
+            lanes={groups[name]}
             kind={kind}
             focusSubmissionId={focusSubmissionId}
             onFocusHandled={onFocusHandled}
             onOpenDiscussion={onOpenDiscussion}
           />
         ))}
-        {submissionIds.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
+        {shipperNames.length === 0 && <p className="text-sm text-ink-400">{emptyLabel}</p>}
       </div>
     </div>
   );
@@ -1507,7 +1537,11 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
   };
 
   const closeNoVendor = async () => {
-    if (!confirm("Close this ticket as 'no vendor available'? This cannot supply a rate for this OD.")) return;
+    const msg =
+      request.current_final_rate != null
+        ? "Close this ticket as 'no lower rate found'? The existing Final Rate stays as the standing quote."
+        : "Close this ticket as 'no vendor available'? This cannot supply a rate for this OD.";
+    if (!confirm(msg)) return;
     setBusy(true);
     try {
       await fetch(`/api/vm/requests/${request.id}/close-no-vendor`, { method: "POST" });
@@ -1571,7 +1605,9 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
         </label>
         <span className="flex-1" />
         <button onClick={closeNoVendor} disabled={busy} className="text-sm text-red-600 hover:underline">
-          Close — no vendor available
+          {request.current_final_rate != null
+            ? "Close — no lower rate found (keeps current rate)"
+            : "Close — no vendor available"}
         </button>
       </div>
 
@@ -1650,8 +1686,16 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
         const lastViewed = primary ? views[primary.submission_id] : null;
         const isNew = primary && (!lastViewed || new Date(primary.submission_created_at) > new Date(lastViewed));
         const toggleAndMark = (n) => {
+          const wasCollapsed = collapsed[n] ?? true;
           toggle(n);
-          if (primary && (collapsed[n] ?? true)) onViewed(primary.submission_id);
+          if (wasCollapsed) {
+            if (primary) {
+              onViewed(primary.submission_id);
+              onOpenDiscussion(`/api/submissions/${primary.submission_id}/comments`);
+            } else if (rows[0]) {
+              onOpenDiscussion(`/api/vm-requests/${rows[0].id}/comments`);
+            }
+          }
         };
         return (
           <div
@@ -1882,9 +1926,10 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
                   onViewMore={(key, title) => setPrioritizationView({ key, title })}
                 />
                 <p className="text-xs text-ink-400 mt-2">
-                  Still-open lanes that already have a Final Rate, but sales asked for a lower one because it
-                  didn't meet their target. "Avg Target Rate" averages the target across every sales request on
-                  that lane.
+                  Lanes that already have a Final Rate where sales asked for a lower one — still-open requests,
+                  plus ones VM already closed as "no lower rate found" (the existing rate stands, but it's worth
+                  tracking which lanes keep getting asked for a better price). "Avg Target Rate" averages the
+                  target across every sales request on that lane.
                 </p>
               </div>
               <div>

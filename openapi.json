@@ -208,7 +208,7 @@
     },
     "/api/vm/requests/{request_id}/close-no-vendor": {
       "post": {
-        "summary": "VM: close this request with no rate found — no vendor is willing to serve this OD/vehicle type.",
+        "summary": "VM: decline to find a rate. If this lane never had a Final Rate, closes as closed_no_vendor and clears it. If it already had one (sales was asking for a lower rate), closes as closed_no_lower_rate and leaves the existing Final Rate untouched.",
         "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
       }
@@ -334,7 +334,7 @@
           "target_cost": { "type": "number", "nullable": true, "description": "target_rate / 1.111 — shown to VM instead of the raw shipper target." },
           "current_final_rate": { "type": "number", "nullable": true },
           "requested_by": { "type": "string" },
-          "status": { "type": "string", "enum": ["open", "in_progress", "resolved", "closed_no_vendor"] },
+          "status": { "type": "string", "enum": ["open", "in_progress", "resolved", "closed_no_vendor", "closed_no_lower_rate"] },
           "resolved_vendor": { "type": "string", "nullable": true },
           "resolved_cost": { "type": "number", "nullable": true },
           "created_at": { "type": "string" },
@@ -402,7 +402,7 @@
       "VmRequestUpdate": {
         "type": "object",
         "properties": {
-          "status": { "type": "string", "enum": ["open", "in_progress", "resolved", "closed_no_vendor"], "nullable": true },
+          "status": { "type": "string", "enum": ["open", "in_progress", "resolved", "closed_no_vendor", "closed_no_lower_rate"], "nullable": true },
           "resolved_vendor": { "type": "string", "nullable": true },
           "resolved_cost": { "type": "number", "nullable": true }
         }
