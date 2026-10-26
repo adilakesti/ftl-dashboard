@@ -199,6 +199,7 @@ class SubmissionRow(BaseModel):
     matched_vendor: str | None
     min_dedicated_trip: int | None = None
     min_trip: int | None = None
+    raised_to_vm: bool = False
 
 
 class AddOn(BaseModel):
@@ -436,6 +437,7 @@ async def upload_submission(
                     matched_vendor=result.matched_vendor if not result.single_vendor else None,
                     min_dedicated_trip=row["min_dedicated_trip"],
                     min_trip=row["min_trip"],
+                    raised_to_vm=result.single_vendor,
                 )
             )
 
@@ -477,7 +479,9 @@ async def get_submission(submission_id: int, request: Request):
 
         await cur.execute(
             """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
-                      remarks, matched_vendor, min_dedicated_trip, min_trip
+                      remarks, matched_vendor, min_dedicated_trip, min_trip,
+                      EXISTS(SELECT 1 FROM vm_requests vr WHERE vr.submission_row_id = submission_rows.id
+                             AND vr.status IN ('open', 'in_progress'))
                FROM submission_rows WHERE submission_id = %s ORDER BY id""",
             (submission_id,),
         )
@@ -497,6 +501,7 @@ async def get_submission(submission_id: int, request: Request):
                 matched_vendor=r[7],
                 min_dedicated_trip=r[8],
                 min_trip=r[9],
+                raised_to_vm=bool(r[10]),
             )
             for r in rows
         ],

@@ -1,4 +1,4 @@
-import { Component, useEffect, useState } from "react";
+import { Component, Fragment, useEffect, useState } from "react";
 
 class ErrorBoundary extends Component {
   constructor(props) {
@@ -33,9 +33,9 @@ class ErrorBoundary extends Component {
 }
 
 const RATE_REQUEST_TEMPLATE_CSV =
-  "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate\n" +
-  "Kab. Bekasi,Kota Surabaya,CDE,7000000\n" +
-  "Kab. Bekasi,Kota Bandung,Wingbox,\n";
+  "L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum dedicated trip,Minimum trip\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,7000000,10,20\n" +
+  "Kab. Bekasi,Kota Bandung,Wingbox,,,\n";
 const RATE_REQUEST_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
 
 const MASTER_RATE_TEMPLATE_CSV =
@@ -82,7 +82,7 @@ function Td({ children, className = "" }) {
 
 const DEFAULT_SHIPPER_FORM = {
   shipper_name: "",
-  sales_pic: "",
+  sales_email: "",
   shipper_status: "new",
   potential_monthly_revenue: "",
   commodity_type: "",
@@ -141,6 +141,72 @@ function fetchDirectoryUsers() {
   }
   return directoryUsersPromise;
 }
+
+function resetDirectoryUsers() {
+  directoryUsersPromise = null;
+}
+
+function useDirectoryUsers() {
+  const [users, setUsers] = useState([]);
+  useEffect(() => {
+    fetchDirectoryUsers().then(setUsers);
+  }, []);
+  return users;
+}
+
+const userLabel = (u) => u.display_name || u.email;
+
+// Sales identity of a lane/ticket: the linked sales user, or (legacy submissions,
+// from before Sales PIC became a dropdown) the name that was typed in.
+const salesKeyOf = (x) => (x.sales_email ? `e:${x.sales_email}` : x.sales_pic ? `l:${x.sales_pic}` : "");
+
+function FilterBar({ items, shipper, setShipper, sales, setSales }) {
+  const users = useDirectoryUsers();
+  const shippers = [...new Set(items.map((x) => x.shipper_name).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const salesOptions = [];
+  const seen = new Set();
+  for (const x of items) {
+    const key = salesKeyOf(x);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const label = key.startsWith("e:")
+      ? userLabel(users.find((u) => u.email === x.sales_email) || { email: x.sales_email })
+      : `${x.sales_pic} (legacy)`;
+    salesOptions.push({ key, label });
+  }
+  salesOptions.sort((a, b) => a.label.localeCompare(b.label));
+  return (
+    <div className="flex gap-3 mb-4">
+      <select
+        className="border border-ink-200 rounded px-3 py-2 text-sm bg-white"
+        value={shipper}
+        onChange={(e) => setShipper(e.target.value)}
+      >
+        <option value="">All shippers</option>
+        {shippers.map((n) => (
+          <option key={n} value={n}>
+            {n}
+          </option>
+        ))}
+      </select>
+      <select
+        className="border border-ink-200 rounded px-3 py-2 text-sm bg-white"
+        value={sales}
+        onChange={(e) => setSales(e.target.value)}
+      >
+        <option value="">All sales</option>
+        {salesOptions.map((o) => (
+          <option key={o.key} value={o.key}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+const matchesFilters = (x, shipper, sales) =>
+  (!shipper || x.shipper_name === shipper) && (!sales || salesKeyOf(x) === sales);
 
 const MENTION_RE = /@(\w[\w.]*)/g;
 
@@ -238,9 +304,16 @@ function Discussion({ endpoint, id }) {
       <p className="text-xs text-ink-500 uppercase font-semibold mb-2">Discussion</p>
       <div className="space-y-2 max-h-64 overflow-y-auto mb-2 bg-ink-50 rounded-lg p-2">
         {comments.map((c) => (
-          <div key={c.id} className="bg-white rounded-lg px-3 py-2 shadow-sm text-sm">
+          <div
+            key={c.id}
+            className={`rounded-lg px-3 py-2 shadow-sm text-sm ${
+              c.author_email === "system" ? "bg-amber-50 border border-amber-200" : "bg-white"
+            }`}
+          >
             <div className="flex items-baseline gap-2">
-              <span className="font-medium">{c.author_email}</span>
+              <span className="font-medium">
+                {c.author_email === "system" ? "⚙ System" : c.author_email}
+              </span>
               <span className="text-ink-400 text-xs">{c.created_at}</span>
             </div>
             <div className="text-ink-700 whitespace-pre-wrap">{renderWithMentions(c.message)}</div>
@@ -257,7 +330,7 @@ function Discussion({ endpoint, id }) {
                 onClick={() => pickMention(u.email)}
                 className="w-full text-left px-3 py-1.5 text-xs hover:bg-ink-50 flex justify-between"
               >
-                <span>{u.email}</span>
+                <span>{u.display_name ? `${u.display_name} · ${u.email}` : u.email}</span>
                 <span className="text-ink-400 uppercase">{u.role}</span>
               </button>
             ))}
@@ -374,6 +447,8 @@ function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocus
                 <Th>Target Rate</Th>
                 <Th>Final Rate</Th>
                 <Th>Remarks</Th>
+                <Th>Min Ded. Trip</Th>
+                <Th>Min Trip</Th>
                 {kind === "active" && <Th>Aging (days)</Th>}
               </tr>
             </thead>
@@ -386,9 +461,16 @@ function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocus
                   <Td>{l.vehicle_type}</Td>
                   <Td>{fmt(l.target_rate)}</Td>
                   <Td className={l.final_rate == null ? "text-ink-400" : "font-medium"}>{fmt(l.final_rate)}</Td>
-                  <Td className={l.remarks === "No vendor available (VM)" ? "text-red-500" : "text-ink-500"}>
+                  <Td className={(l.remarks || "").startsWith("No vendor available") ? "text-red-500" : "text-ink-500"}>
                     {l.remarks || "-"}
+                    {l.auto_closed_sla && (
+                      <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                        Auto-closed (SLA)
+                      </span>
+                    )}
                   </Td>
+                  <Td>{l.min_dedicated_trip ?? "-"}</Td>
+                  <Td>{l.min_trip ?? "-"}</Td>
                   {kind === "active" && <Td>{l.aging_days ?? "-"}</Td>}
                 </tr>
               ))}
@@ -401,11 +483,9 @@ function ShipperLaneGroup({ shipperName, lanes, kind, focusSubmissionId, onFocus
 }
 
 function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
-  const [q, setQ] = useState("");
-  const s = q.toLowerCase();
-  const filtered = lanes.filter(
-    (l) => !s || (l.shipper_name || "").toLowerCase().includes(s) || (l.sales_pic || "").toLowerCase().includes(s)
-  );
+  const [shipperFilter, setShipperFilter] = useState("");
+  const [salesFilter, setSalesFilter] = useState("");
+  const filtered = lanes.filter((l) => matchesFilters(l, shipperFilter, salesFilter));
 
   const groups = {};
   for (const l of filtered) {
@@ -420,11 +500,12 @@ function GlobalLanesList({ lanes, emptyLabel, kind, focusSubmissionId, onFocusHa
 
   return (
     <div>
-      <input
-        className="w-full border border-ink-200 rounded px-3 py-2 text-sm mb-4"
-        placeholder="Search by shipper name or sales PIC…"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
+      <FilterBar
+        items={lanes}
+        shipper={shipperFilter}
+        setShipper={setShipperFilter}
+        sales={salesFilter}
+        setSales={setSalesFilter}
       />
       <div className="space-y-2">
         {shipperNames.map((name) => (
@@ -452,6 +533,10 @@ const CSV_ALIASES = {
   "destination": "destination",
   "vehicle type": "vehicle_type",
   "target rate": "target_rate",
+  "minimum dedicated trip": "min_dedicated_trip",
+  "min dedicated trip": "min_dedicated_trip",
+  "minimum trip": "min_trip",
+  "min trip": "min_trip",
 };
 
 function parseCsvPreview(text) {
@@ -488,12 +573,13 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [bulkRequesting, setBulkRequesting] = useState(false);
   const [discussionEndpoint, setDiscussionEndpoint] = useState(null);
 
+  const salesUsers = useDirectoryUsers().filter((u) => u.role === "sales");
   const [shipperForm, setShipperForm] = useState(DEFAULT_SHIPPER_FORM);
   const [addOnsState, setAddOnsState] = useState(DEFAULT_ADD_ONS_STATE);
   const [file, setFile] = useState(null);
   const [previewRows, setPreviewRows] = useState([]);
   const [uploadMode, setUploadMode] = useState("csv"); // "csv" | "manual"
-  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
+  const [manualRows, setManualRows] = useState([{ origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
 
   const loadSubmissions = () => {
     fetch("/api/submissions")
@@ -520,7 +606,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setFile(null);
     setPreviewRows([]);
     setUploadMode("csv");
-    setManualRows([{ origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
+    setManualRows([{ origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
     setSelectedIds(new Set());
     setError(null);
   };
@@ -530,7 +616,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setManualRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
   };
   const addManualRow = () => {
-    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", target_rate: "" }]);
+    setManualRows((rows) => [...rows, { origin: "", destination: "", vehicle_type: "", target_rate: "", min_dedicated_trip: "", min_trip: "" }]);
   };
   const removeManualRow = (i) => {
     setActive(null);
@@ -540,9 +626,11 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const manualRowsFilled = manualRows.filter((r) => r.origin.trim() && r.destination.trim() && r.vehicle_type.trim());
 
   const manualRowsToCsvFile = () => {
-    const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate"];
+    const lines = ["L2 Origin,L2 Destinasi,Vehicle Type,Target Rate,Minimum dedicated trip,Minimum trip"];
     for (const r of manualRowsFilled) {
-      lines.push([r.origin, r.destination, r.vehicle_type, r.target_rate || ""].join(","));
+      lines.push(
+        [r.origin, r.destination, r.vehicle_type, r.target_rate || "", r.min_dedicated_trip || "", r.min_trip || ""].join(",")
+      );
     }
     return new File([lines.join("\n")], "manual_entry.csv", { type: "text/csv" });
   };
@@ -560,7 +648,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   };
 
   const checkResult = async () => {
-    if (!shipperForm.shipper_name.trim() || !shipperForm.sales_pic.trim()) {
+    if (!shipperForm.shipper_name.trim() || !shipperForm.sales_email) {
       setError("Shipper Name and Sales PIC are required");
       return;
     }
@@ -580,7 +668,9 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       const form = new FormData();
       form.append("file", uploadMode === "manual" ? manualRowsToCsvFile() : file);
       form.append("shipper_name", shipperForm.shipper_name);
-      form.append("sales_pic", shipperForm.sales_pic);
+      const picUser = salesUsers.find((u) => u.email === shipperForm.sales_email);
+      form.append("sales_pic", picUser ? userLabel(picUser) : shipperForm.sales_email);
+      form.append("sales_email", shipperForm.sales_email);
       form.append("shipper_status", shipperForm.shipper_status);
       form.append("potential_monthly_revenue", shipperForm.potential_monthly_revenue);
       form.append("commodity_type", shipperForm.commodity_type);
@@ -594,7 +684,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       }
       const data = await res.json();
       setActive(data);
-      setRequested({});
+      setRequested(Object.fromEntries(data.rows.filter((r) => r.raised_to_vm).map((r) => [r.id, true])));
       setSelectedIds(new Set());
       loadSubmissions();
       loadLanes();
@@ -611,7 +701,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       .then((r) => r.json())
       .then((d) => {
         setActive(d);
-        setRequested({});
+        setRequested(Object.fromEntries(d.rows.filter((r) => r.raised_to_vm).map((r) => [r.id, true])));
         setSelectedIds(new Set());
         setFile(null);
         setPreviewRows([]);
@@ -672,7 +762,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
 
   const activeLanes = lanes.filter((l) => l.vm_status === "open" || l.vm_status === "in_progress");
   const completedLanes = lanes.filter(
-    (l) => !(l.vm_status === "open" || l.vm_status === "in_progress") && (l.final_rate != null || l.remarks === "No vendor available (VM)")
+    (l) => !(l.vm_status === "open" || l.vm_status === "in_progress") && (l.final_rate != null || (l.remarks || "").startsWith("No vendor available"))
   );
 
   useEffect(() => {
@@ -784,11 +874,18 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                   </div>
                   <div>
                     <label className="text-xs text-ink-500">Sales PIC *</label>
-                    <input
+                    <select
                       className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
-                      value={shipperForm.sales_pic}
-                      onChange={(e) => setShipperForm((f) => ({ ...f, sales_pic: e.target.value }))}
-                    />
+                      value={shipperForm.sales_email}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, sales_email: e.target.value }))}
+                    >
+                      <option value="">Select sales…</option>
+                      {salesUsers.map((u) => (
+                        <option key={u.email} value={u.email}>
+                          {userLabel(u)}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="text-xs text-ink-500">New or Existing Shipper</label>
@@ -994,7 +1091,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                 {uploadMode === "csv" ? (
                   <div>
                     <p className="text-sm text-ink-500 mb-3">
-                      Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate (optional).{" "}
+                      Columns: L2 Origin | L2 Destinasi | Vehicle Type | Target Rate, Minimum dedicated trip, Minimum trip (all optional; trips are per month).{" "}
                       <a
                         href={RATE_REQUEST_TEMPLATE_URL}
                         download="ftl_rate_request_template.csv"
@@ -1038,6 +1135,24 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                             value={row.target_rate}
                             onChange={(e) => updateManualRow(i, "target_rate", e.target.value)}
                           />
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="Min dedicated trip /mo"
+                            className="w-44 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.min_dedicated_trip}
+                            onChange={(e) => updateManualRow(i, "min_dedicated_trip", e.target.value)}
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            placeholder="Min trip /mo"
+                            className="w-32 border border-ink-200 rounded px-2 py-1.5 text-sm"
+                            value={row.min_trip}
+                            onChange={(e) => updateManualRow(i, "min_trip", e.target.value)}
+                          />
                           {manualRows.length > 1 && (
                             <button onClick={() => removeManualRow(i)} className="text-ink-400 hover:text-red-600 text-sm px-1">
                               ✕
@@ -1071,6 +1186,8 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                       <Th>Destination</Th>
                       <Th>Vehicle Type</Th>
                       <Th>Target Rate</Th>
+                      <Th>Min Ded. Trip</Th>
+                      <Th>Min Trip</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1080,6 +1197,8 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                         <Td>{row.destination}</Td>
                         <Td>{row.vehicle_type}</Td>
                         <Td>{row.target_rate || "-"}</Td>
+                        <Td>{row.min_dedicated_trip || "-"}</Td>
+                        <Td>{row.min_trip || "-"}</Td>
                       </tr>
                     ))}
                   </tbody>
@@ -1195,6 +1314,10 @@ function MasterRatesPanel() {
   const [error, setError] = useState(null);
   const [ok, setOk] = useState(null);
 
+  const laneKey = (r) => [r.origin, r.destination, r.vehicle_type].map((x) => x.trim().toLowerCase()).join("|");
+  const laneVendorCount = {};
+  for (const r of rates) laneVendorCount[laneKey(r)] = (laneVendorCount[laneKey(r)] || 0) + 1;
+
   const loadMeta = () => fetch("/api/master-rates/meta").then((r) => r.json()).then(setMeta);
   const loadRates = () => fetch("/api/master-rates").then((r) => r.json()).then((d) => setRates(d.rates));
 
@@ -1287,7 +1410,10 @@ function MasterRatesPanel() {
                   <tr key={i}>
                     <Td>{r.origin}</Td>
                     <Td>{r.destination}</Td>
-                    <Td>{r.vehicle_type}</Td>
+                    <Td>
+                      {r.vehicle_type}
+                      {laneVendorCount[laneKey(r)] === 1 && <OnlyOneVendorBadge />}
+                    </Td>
                     <Td>{r.vendor_name}</Td>
                     <Td>{fmt(r.cost)}</Td>
                     <Td className="text-ink-400 text-xs">{r.updated_by}</Td>
@@ -1460,14 +1586,27 @@ function PrioritizationFullPage({ lanesKey, title, showAvgTarget, onBack }) {
 // ---------------------------------------------------------------------------
 
 function ResolveRequestPanel({ request, onDone, onCancel }) {
-  const [vendorRows, setVendorRows] = useState([{ vendor_name: "", cost: "" }]);
+  const emptyRow = { vendor_choice: "", vendor_name: "", cost: "" };
+  const [vendorRows, setVendorRows] = useState([emptyRow]);
+  const [knownVendors, setKnownVendors] = useState([]);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [overrideOther, setOverrideOther] = useState("");
+
+  useEffect(() => {
+    fetch("/api/master-rates/vendors")
+      .then((r) => r.json())
+      .then((d) => setKnownVendors(d.vendors || []))
+      .catch(() => {});
+  }, []);
 
   const updateRow = (i, field, value) => {
     setVendorRows((rows) => rows.map((r, j) => (j === i ? { ...r, [field]: value } : r)));
   };
-  const addRow = () => setVendorRows((rows) => [...rows, { vendor_name: "", cost: "" }]);
+  const effectiveVendor = (r) => (r.vendor_choice === "__other__" ? r.vendor_name : r.vendor_choice).trim();
+  const addRow = () => setVendorRows((rows) => [...rows, emptyRow]);
   const removeRow = (i) => setVendorRows((rows) => rows.filter((_, j) => j !== i));
 
   const submitManual = async () => {
@@ -1475,8 +1614,8 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
     setError(null);
     try {
       const vendor_costs = vendorRows
-        .filter((r) => r.vendor_name.trim() && Number(r.cost) > 0)
-        .map((r) => ({ vendor_name: r.vendor_name.trim(), cost: Number(r.cost) }));
+        .filter((r) => effectiveVendor(r) && Number(r.cost) > 0)
+        .map((r) => ({ vendor_name: effectiveVendor(r), cost: Number(r.cost) }));
       if (vendor_costs.length === 0) {
         setError("Enter at least one vendor name and cost");
         setBusy(false);
@@ -1521,6 +1660,32 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
     }
   };
 
+  const submitOverride = async () => {
+    const reason = overrideReason === "Other…" ? `Other: ${overrideOther.trim()}` : overrideReason;
+    if (!overrideReason || (overrideReason === "Other…" && !overrideOther.trim())) {
+      setError("Pick a reason for using the single vendor");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/vm/requests/${request.id}/use-single-vendor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Failed to approve the single vendor");
+      }
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const closeNoVendor = async () => {
     const msg =
       request.current_final_rate != null
@@ -1548,16 +1713,85 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
         <p className="text-sm text-ink-500 mb-3">Target cost to beat: <span className="font-medium">{fmt(request.target_cost)}</span></p>
       )}
 
+      {request.only_one_vendor && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+          <p className="font-medium text-amber-800">Only 1 Vendor on this lane</p>
+          <p className="text-xs text-amber-800 mt-0.5">
+            Sales sees no rate until a second vendor is added. Add another vendor below, or price this ticket
+            from the only vendor — that approval applies to this ticket only and sales will see the rate
+            marked "Confirmed by VM".
+          </p>
+          {!overrideOpen ? (
+            <button
+              onClick={() => setOverrideOpen(true)}
+              className="mt-2 text-xs px-2 py-1 rounded border border-amber-300 bg-white hover:bg-amber-100"
+            >
+              Price from the only vendor anyway…
+            </button>
+          ) : (
+            <div className="mt-2 space-y-2">
+              <select
+                className="w-full border border-ink-200 rounded px-2 py-1 text-sm bg-white"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+              >
+                <option value="">Reason…</option>
+                <option value="No other vendor serves this lane">No other vendor serves this lane</option>
+                <option value="Dedicated/contract rate">Dedicated/contract rate</option>
+                <option value="Other…">Other…</option>
+              </select>
+              {overrideReason === "Other…" && (
+                <input
+                  placeholder="Explain why"
+                  className="w-full border border-ink-200 rounded px-2 py-1 text-sm"
+                  value={overrideOther}
+                  onChange={(e) => setOverrideOther(e.target.value)}
+                />
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={submitOverride}
+                  disabled={busy}
+                  className="text-xs px-2 py-1 rounded bg-brand-600 text-white hover:bg-brand-700"
+                >
+                  Approve & price
+                </button>
+                <button onClick={() => setOverrideOpen(false)} className="text-xs text-ink-500 hover:underline">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="space-y-2 mb-3">
         <p className="text-xs text-ink-500 uppercase font-semibold">Enter vendor cost(s)</p>
         {vendorRows.map((r, i) => (
           <div key={i} className="flex gap-2">
-            <input
-              placeholder="Vendor name"
-              className="flex-1 border border-ink-200 rounded px-2 py-1 text-sm"
-              value={r.vendor_name}
-              onChange={(e) => updateRow(i, "vendor_name", e.target.value)}
-            />
+            <div className="flex-1 flex flex-col gap-1">
+              <select
+                className="border border-ink-200 rounded px-2 py-1 text-sm bg-white"
+                value={r.vendor_choice}
+                onChange={(e) => updateRow(i, "vendor_choice", e.target.value)}
+              >
+                <option value="">Select vendor…</option>
+                {knownVendors.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+                <option value="__other__">Others…</option>
+              </select>
+              {r.vendor_choice === "__other__" && (
+                <input
+                  placeholder="Vendor name"
+                  className="border border-ink-200 rounded px-2 py-1 text-sm"
+                  value={r.vendor_name}
+                  onChange={(e) => updateRow(i, "vendor_name", e.target.value)}
+                />
+              )}
+            </div>
             <input
               placeholder="Cost"
               type="number"
@@ -1609,9 +1843,78 @@ function ResolveRequestPanel({ request, onDone, onCancel }) {
 
 const UNKNOWN_SHIPPER = "Ad-hoc / unknown shipper";
 
+function OnlyOneVendorBadge() {
+  return (
+    <span className="ml-2 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap">
+      Only 1 Vendor
+    </span>
+  );
+}
+
+// Expanded view of a ticket: trip commitments, who won and why, and the full ranked vendor list.
+function TicketDetail({ r }) {
+  const winnerShown = r.resolved_vendor != null && r.resolved_cost != null;
+  const margin =
+    winnerShown && r.current_final_rate != null && r.resolved_cost > 0
+      ? ((r.current_final_rate / r.resolved_cost - 1) * 100).toFixed(1)
+      : null;
+  return (
+    <div className="grid grid-cols-3 gap-6 text-sm">
+      <div>
+        <p className="text-xs text-ink-500 uppercase font-semibold mb-1">Trip commitment (per month)</p>
+        <p>Minimum dedicated trip: <span className="font-medium">{r.min_dedicated_trip ?? "-"}</span></p>
+        <p>Minimum trip: <span className="font-medium">{r.min_trip ?? "-"}</span></p>
+        {r.auto_closed_sla && (
+          <p className="mt-2 text-xs text-amber-700">Auto-closed by SLA after 7 days with no VM action.</p>
+        )}
+      </div>
+      <div>
+        <p className="text-xs text-ink-500 uppercase font-semibold mb-1">Winning vendor</p>
+        {winnerShown ? (
+          <>
+            <p>
+              <span className="font-medium">{r.resolved_vendor}</span> at {fmt(r.resolved_cost)}
+            </p>
+            {r.winner_basis && <p className="text-ink-500">{r.winner_basis}</p>}
+            <p className="text-ink-500">
+              Final rate {fmt(r.current_final_rate)}
+              {margin != null && ` (+${margin}% over cost)`}
+            </p>
+            {r.single_vendor_approved && (
+              <p className="mt-1 text-xs text-amber-700">
+                Single vendor approved by {r.override_by}: {r.override_reason}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="text-ink-400">No vendor applied yet.</p>
+        )}
+      </div>
+      <div>
+        <p className="text-xs text-ink-500 uppercase font-semibold mb-1">
+          Vendors on this lane ({r.vendor_count ?? r.ranked_vendors.length})
+        </p>
+        {r.ranked_vendors.length > 0 ? (
+          <ol className="list-decimal pl-5">
+            {r.ranked_vendors.map((v) => (
+              <li key={v.vendor} className={v.vendor === r.resolved_vendor ? "font-medium" : ""}>
+                {v.vendor} — {fmt(v.cost)}
+                {v.vendor === r.resolved_vendor && <span className="ml-1 text-xs text-brand-600">winner</span>}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-ink-400">None on record.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, onRefresh, views, onViewed, focusSubmissionId, onFocusHandled, onOpenDiscussion }) {
   const [collapsed, setCollapsed] = useState({});
   const [resolving, setResolving] = useState(null);
+  const [detailId, setDetailId] = useState(null);
 
   const groups = {};
   for (const r of requests) {
@@ -1753,10 +2056,14 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                   </thead>
                   <tbody>
                     {rows.map((r) => (
-                      <tr key={r.id} className={selectedId === r.id ? "bg-ink-50" : ""}>
+                      <Fragment key={r.id}>
+                      <tr className={selectedId === r.id ? "bg-ink-50" : ""}>
                         <Td>{r.origin}</Td>
                         <Td>{r.destination}</Td>
-                        <Td>{r.vehicle_type}</Td>
+                        <Td>
+                          {r.vehicle_type}
+                          {r.only_one_vendor && (r.status === "open" || r.status === "in_progress") && <OnlyOneVendorBadge />}
+                        </Td>
                         <Td className="text-ink-500">{r.requested_by}</Td>
                         <Td>{r.target_cost != null ? fmt(r.target_cost) : "-"}</Td>
                         <Td>{r.current_final_rate != null ? fmt(r.current_final_rate) : "No rate yet"}</Td>
@@ -1771,20 +2078,39 @@ function RequestsByShipper({ requests, selectedId, setSelectedId, updateStatus, 
                               <option key={v} value={v}>{l}</option>
                             ))}
                           </select>
-                        </Td>
-                        <Td>
-                          {r.status === "open" || r.status === "in_progress" ? (
-                            <button
-                              onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
-                              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50"
-                            >
-                              {selectedId === r.id ? "Cancel" : "Fill rate"}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-ink-400">—</span>
+                          {r.auto_closed_sla && (
+                            <span className="ml-2 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                              Auto-closed (SLA)
+                            </span>
                           )}
                         </Td>
+                        <Td>
+                          <div className="flex gap-2">
+                            {(r.status === "open" || r.status === "in_progress") && (
+                              <button
+                                onClick={() => setSelectedId(selectedId === r.id ? null : r.id)}
+                                className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 whitespace-nowrap"
+                              >
+                                {selectedId === r.id ? "Cancel" : "Fill rate"}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setDetailId(detailId === r.id ? null : r.id)}
+                              className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 whitespace-nowrap"
+                            >
+                              {detailId === r.id ? "Hide details" : "Details"}
+                            </button>
+                          </div>
+                        </Td>
                       </tr>
+                      {detailId === r.id && (
+                        <tr>
+                          <td colSpan={9} className="px-4 py-3 bg-ink-50 border-t border-ink-100">
+                            <TicketDetail r={r} />
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -1810,6 +2136,8 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   const [views, setViews] = useState({});
   const [prioritizationView, setPrioritizationView] = useState(null); // null | { key, title }
   const [discussionEndpoint, setDiscussionEndpoint] = useState(null);
+  const [shipperFilter, setShipperFilter] = useState("");
+  const [salesFilter, setSalesFilter] = useState("");
 
   const selectRow = (id) => {
     setSelectedId(id);
@@ -1836,7 +2164,7 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   useEffect(() => {
     if (!focusSubmissionId) return;
     const isCompleted = requests.some(
-      (r) => r.submission_id === focusSubmissionId && (r.status === "resolved" || r.status === "closed_no_vendor")
+      (r) => r.submission_id === focusSubmissionId && r.status !== "open" && r.status !== "in_progress"
     );
     setTab(isCompleted ? "completed" : "active");
   }, [focusSubmissionId]);
@@ -1937,11 +2265,20 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
       {(tab === "active" || tab === "completed") && (
         <div className="flex gap-5 items-start">
           <div className="flex-1 min-w-0">
+            <FilterBar
+              items={requests}
+              shipper={shipperFilter}
+              setShipper={setShipperFilter}
+              sales={salesFilter}
+              setSales={setSalesFilter}
+            />
             <RequestsByShipper
-              requests={requests.filter((r) =>
-                tab === "active"
-                  ? r.status === "open" || r.status === "in_progress"
-                  : r.status === "resolved" || r.status === "closed_no_vendor"
+              requests={requests.filter(
+                (r) =>
+                  matchesFilters(r, shipperFilter, salesFilter) &&
+                  (tab === "active"
+                    ? r.status === "open" || r.status === "in_progress"
+                    : r.status !== "open" && r.status !== "in_progress")
               )}
               selectedId={selectedId}
               setSelectedId={selectRow}
@@ -1988,6 +2325,7 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
 function AdminPanel() {
   const [users, setUsers] = useState([]);
   const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState("sales");
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -2006,14 +2344,16 @@ function AdminPanel() {
       const res = await fetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: newEmail.trim(), role: newRole }),
+        body: JSON.stringify({ email: newEmail.trim(), role: newRole, display_name: newName.trim() || null }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || "Failed to add user");
       }
       setNewEmail("");
+      setNewName("");
       setNewRole("sales");
+      resetDirectoryUsers();
       loadUsers();
     } catch (err) {
       setError(err.message);
@@ -2028,11 +2368,24 @@ function AdminPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, role }),
     });
+    resetDirectoryUsers();
+    loadUsers();
+  };
+
+  const renameUser = async (u, name) => {
+    if (name.trim() === (u.display_name || "") || !name.trim()) return;
+    await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: u.email, role: u.role, display_name: name.trim() }),
+    });
+    resetDirectoryUsers();
     loadUsers();
   };
 
   const removeUser = async (email) => {
     await fetch(`/api/admin/users/${encodeURIComponent(email)}`, { method: "DELETE" });
+    resetDirectoryUsers();
     loadUsers();
   };
 
@@ -2050,6 +2403,16 @@ function AdminPanel() {
               value={newEmail}
               onChange={(e) => setNewEmail(e.target.value)}
               placeholder="name@ninjavan.co"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="text-xs text-ink-500">Display name</label>
+            <input
+              required
+              className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. Adila Kestibawani"
             />
           </div>
           <div>
@@ -2079,6 +2442,7 @@ function AdminPanel() {
         <table className="w-full">
           <thead>
             <tr>
+              <Th>Name</Th>
               <Th>Email</Th>
               <Th>Role</Th>
               <Th></Th>
@@ -2087,6 +2451,15 @@ function AdminPanel() {
           <tbody>
             {users.map((u) => (
               <tr key={u.email}>
+                <Td>
+                  <input
+                    key={u.display_name || ""}
+                    defaultValue={u.display_name || ""}
+                    placeholder="Add a name"
+                    onBlur={(e) => renameUser(u, e.target.value)}
+                    className="text-sm border border-transparent hover:border-ink-200 rounded px-1 py-0.5 w-48"
+                  />
+                </Td>
                 <Td>{u.email}</Td>
                 <Td>
                   <select
@@ -2108,7 +2481,7 @@ function AdminPanel() {
             ))}
             {users.length === 0 && (
               <tr>
-                <Td className="text-ink-400" colSpan={3}>No users yet</Td>
+                <Td className="text-ink-400" colSpan={4}>No users yet</Td>
               </tr>
             )}
           </tbody>

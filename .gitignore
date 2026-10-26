@@ -1,2 +1,3 @@
 # Substrait CLI link state
 .substrait/
+__pycache__/

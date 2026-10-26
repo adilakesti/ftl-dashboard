@@ -7,38 +7,35 @@
   },
   "paths": {
     "/health": {
-      "get": {
-        "summary": "Readiness probe.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } }
-      }
+      "get": { "summary": "Readiness probe.", "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}}}} }
     },
     "/api/me": {
       "get": {
         "summary": "Return the signed-in user's email (from SSO) and their provisioned role (sales/vm/superadmin), if any.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Me" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Me"}}}} }
       }
     },
     "/api/admin/users": {
       "get": {
         "summary": "Superadmin: list all users and their provisioned role.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserRoleList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserRoleList"}}}} }
       },
       "post": {
         "summary": "Superadmin: add a user or change an existing user's role (sales/vm/superadmin).",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserRoleIn" } } } },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UserRole" } } } } }
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserRoleIn"}}} },
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserRole"}}}} }
       }
     },
     "/api/admin/users/{email}": {
       "delete": {
         "summary": "Superadmin: revoke a user's access entirely.",
-        "parameters": [{ "name": "email", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "204": { "description": "No Content" } }
+        "parameters": [{"name": "email", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": { "204": {"description": "No Content"} }
       }
     },
     "/api/submissions/upload": {
       "post": {
-        "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests; computes and stores a final rate + remarks per row.",
+        "summary": "Sales: upload shipper details, add-ons, and a CSV of OD + vehicle-type rate requests (optional columns: Target Rate, Minimum dedicated trip, Minimum trip). Lanes with fewer than 2 vendors get no rate and are raised to VM automatically.",
         "requestBody": {
           "required": true,
           "content": {
@@ -53,171 +50,167 @@
                   "potential_monthly_revenue": { "type": "string", "description": "Numeric string, IDR." },
                   "commodity_type": { "type": "string" },
                   "high_value_fragile": { "type": "boolean" },
-                  "add_ons_json": { "type": "string", "description": "JSON array of {label, value?}; metadata only, doesn't affect Final Rate." }
+                  "add_ons_json": { "type": "string", "description": "JSON array of {label, value?}; metadata only, doesn't affect Final Rate." },
+                  "sales_email": { "type": "string", "description": "Email of a sales-role user; sales_pic should carry their display name." }
                 },
                 "required": ["file", "shipper_name", "sales_pic", "shipper_status"]
               }
             }
           }
         },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionDetail" } } } } }
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}} }
       }
     },
     "/api/submissions": {
       "get": {
         "summary": "Sales: list the current user's past submissions.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionList"}}}} }
       }
     },
     "/api/submissions/{submission_id}": {
       "get": {
         "summary": "Sales: fetch one submission and its computed rows.",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionDetail" } } } } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}} }
       }
     },
     "/api/submissions/{submission_id}/tickets": {
       "get": {
         "summary": "Sales: list the VM requests (tickets) raised from this submission's rows — active (open/in_progress) vs completed (resolved/closed_no_vendor).",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestList" } } } } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestList"}}}} }
       }
     },
     "/api/submissions/{submission_id}/quotation.xlsx": {
       "get": {
         "summary": "Sales: download an Excel quotation of this submission's rows that currently have a Final Rate.",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "An .xlsx file", "content": { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {} } } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "An .xlsx file", "content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}}} }
       }
     },
     "/api/tickets": {
       "get": {
         "summary": "Sales: every VM request this user has raised, across all their submissions — feeds the global Active/Completed Request views.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestList"}}}} }
       }
     },
     "/api/lanes": {
       "get": {
         "summary": "Sales: every lane from every one of this user's submissions, not just ones raised to VM. A lane is active while it has a currently open/in_progress VM request; otherwise it's completed if it has a Final Rate or an explicit no-vendor outcome. Feeds the global Active/Completed Request views (which cover ALL requested OD lanes, not only escalated ones).",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LaneList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LaneList"}}}} }
       }
     },
     "/api/users": {
       "get": {
         "summary": "Any provisioned user: the full roster (email + role), for @mention autocomplete in a discussion thread.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DirectoryUserList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DirectoryUserList"}}}} }
       }
     },
     "/api/notifications": {
       "get": {
         "summary": "The current user's personal notifications (currently: @mentions in a submission discussion), newest first, plus an unread count.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NotificationList"}}}} }
       }
     },
     "/api/notifications/{notification_id}/read": {
       "post": {
         "summary": "Mark one of the current user's notifications as read.",
-        "parameters": [{ "name": "notification_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "204": { "description": "No Content" } }
+        "parameters": [{"name": "notification_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "204": {"description": "No Content"} }
       }
     },
-    "/api/notifications/read-all": {
-      "post": {
-        "summary": "Mark all of the current user's unread notifications as read.",
-        "responses": { "204": { "description": "No Content" } }
-      }
-    },
+    "/api/notifications/read-all": { "post": {"summary": "Mark all of the current user's unread notifications as read.", "responses": {"204": {"description": "No Content"}}} },
     "/api/ticket-views": {
       "get": {
         "summary": "The current user's per-submission \"last viewed\" timestamps, used to show a \"New\" badge on tickets they haven't opened yet.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TicketViewList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TicketViewList"}}}} }
       }
     },
     "/api/submissions/{submission_id}/view": {
       "post": {
         "summary": "Mark a submission's ticket/discussion as viewed by the current user (upserts their ticket_views row), clearing its \"New\" badge for them.",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "204": { "description": "No Content" } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "204": {"description": "No Content"} }
       }
     },
     "/api/vm-requests/{request_id}/comments": {
       "get": {
         "summary": "List the discussion thread on a VM request (visible to sales/VM/superadmin; persists across open, resolved and closed states).",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentList" } } } } }
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommentList"}}}} }
       },
       "post": {
         "summary": "Post a message to a VM request's discussion thread. Used only for ad-hoc requests with no parent submission — submission-linked requests use the shipper-level thread instead.",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CommentIn" } } } },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Comment" } } } } }
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommentIn"}}} },
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Comment"}}}} }
       }
     },
     "/api/submissions/{submission_id}/comments": {
       "get": {
         "summary": "List the discussion thread on a shipper (submission) — shared across every VM request raised from its rows, surviving a lane's move from active to completed.",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionCommentList" } } } } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionCommentList"}}}} }
       },
       "post": {
         "summary": "Post a message to a shipper's discussion thread.",
-        "parameters": [{ "name": "submission_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionCommentIn" } } } },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmissionComment" } } } } }
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionCommentIn"}}} },
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionComment"}}}} }
       }
     },
     "/api/vm-requests": {
       "post": {
         "summary": "Sales: escalate a lane (an existing submission row, or ad hoc) to Vendor Management.",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestIn" } } } },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestIn"}}} },
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
     "/api/vm/requests": {
       "get": {
         "summary": "VM: list all vendor-management requests (open/in_progress first), each with an aging_days count.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestList"}}}} }
       }
     },
     "/api/vm/requests/{request_id}": {
       "patch": {
         "summary": "VM: update a request's status directly, or record the vendor/cost it resolved at.",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequestUpdate" } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestUpdate"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
     "/api/vm/requests/{request_id}/resolve": {
       "post": {
         "summary": "VM: submit one or more vendor costs for this request's lane; upserts them into master vendor rates, recomputes the Final Rate (and the originating submission row's), and marks the request resolved.",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmResolveIn" } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmResolveIn"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
     "/api/vm/requests/{request_id}/resolve-upload": {
       "post": {
         "summary": "VM: same as /resolve, but vendor costs come from a CSV (rows not matching this request's lane are ignored); also upserts into the main master vendor rates.",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "file": { "type": "string", "format": "binary" } }, "required": ["file"] } } }
+          "content": { "multipart/form-data": {"schema": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}, "required": ["file"]}} }
         },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
     "/api/vm/requests/{request_id}/close-no-vendor": {
       "post": {
         "summary": "VM: decline to find a rate. If this lane never had a Final Rate, closes as closed_no_vendor and clears it. If it already had one (sales was asking for a lower rate), closes as closed_no_lower_rate and leaves the existing Final Rate untouched.",
-        "parameters": [{ "name": "request_id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmRequest" } } } } }
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
     "/api/vm/requests/resolve-ready": {
       "post": {
         "summary": "VM: bulk-resolve every open/in_progress request (optionally scoped to one shipper, or the ad-hoc bucket via shipper_name=__unknown__) whose lane already has master vendor-rate data.",
-        "parameters": [{ "name": "shipper_name", "in": "query", "required": false, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResolveReadyResult" } } } } }
+        "parameters": [{"name": "shipper_name", "in": "query", "required": false, "schema": {"type": "string"}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveReadyResult"}}}} }
       }
     },
     "/api/master-rates/upload": {
@@ -225,55 +218,72 @@
         "summary": "VM: upload a CSV (Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name); each row is upserted — existing lanes not present in the file are kept. Also auto-resolves any open/in_progress requests on the uploaded lanes.",
         "requestBody": {
           "required": true,
-          "content": { "multipart/form-data": { "schema": { "type": "object", "properties": { "file": { "type": "string", "format": "binary" } }, "required": ["file"] } } }
+          "content": { "multipart/form-data": {"schema": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}, "required": ["file"]}} }
         },
-        "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MasterRateUploadResult" } } } } }
+        "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterRateUploadResult"}}}} }
       }
     },
     "/api/master-rates/meta": {
       "get": {
         "summary": "VM: metadata about the most recent master vendor-rate upload/resolve action.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MasterRateMeta" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MasterRateMeta"}}}} }
       }
     },
     "/api/master-rates": {
       "get": {
         "summary": "VM: list every stored (origin, destination, vehicle type, vendor, cost) row.",
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VendorRateList" } } } } }
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VendorRateList"}}}} }
       }
     },
-    "/api/master-rates/export": {
-      "get": {
-        "summary": "VM: download all master vendor rates as a CSV file.",
-        "responses": { "200": { "description": "A CSV file", "content": { "text/csv": {} } } }
-      }
-    },
+    "/api/master-rates/export": { "get": {"summary": "VM: download all master vendor rates as a CSV file.", "responses": {"200": {"description": "A CSV file", "content": {"text/csv": {}}}}} },
     "/api/vm/summary": {
       "get": {
         "summary": "VM: prioritization summary — 'seeking_lower_rate' is still-open requests with an existing Final Rate the sales target didn't meet; 'missing_lanes' is lanes VM has already closed as closed_no_vendor, accumulated by how often that's happened. Both ranked by count; default top 10, pass a higher limit for the full list.",
-        "parameters": [{ "name": "limit", "in": "query", "required": false, "schema": { "type": "integer", "default": 10, "minimum": 1, "maximum": 1000 } }],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/VmSummary" } } } } }
+        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 10, "minimum": 1, "maximum": 1000}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmSummary"}}}} }
+      }
+    },
+    "/api/vm/requests/{request_id}/use-single-vendor": {
+      "post": {
+        "summary": "VM: price a ticket from the lane's one and only vendor. Ticket-level approval; sales then sees the rate with remark 'Confirmed by VM', and an automatic note is added to the shipper's Discussion.",
+        "parameters": [{"name": "request_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SingleVendorIn"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
+      }
+    },
+    "/api/master-rates/vendors": {
+      "get": {
+        "summary": "VM: distinct vendor names in the master data, for the vendor dropdown.",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VendorNameList"}}}} }
       }
     }
   },
   "components": {
     "schemas": {
-      "Health": { "type": "object", "properties": { "status": { "type": "string" } } },
+      "Health": { "type": "object", "properties": {"status": {"type": "string"}} },
       "Me": {
         "type": "object",
+        "properties": { "email": {"type": "string", "nullable": true}, "role": {"type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null]} }
+      },
+      "UserRole": {
+        "type": "object",
         "properties": {
-          "email": { "type": "string", "nullable": true },
-          "role": { "type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null] }
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] },
+          "display_name": { "type": "string", "nullable": true, "description": "Human-friendly name; shown in the Sales PIC dropdown and Sales filters." }
         }
       },
-      "UserRole": { "type": "object", "properties": { "email": { "type": "string" }, "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] } } },
       "UserRoleIn": {
         "type": "object",
         "required": ["email", "role"],
-        "properties": { "email": { "type": "string" }, "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] } }
+        "properties": {
+          "email": { "type": "string" },
+          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] },
+          "display_name": { "type": "string", "nullable": true, "description": "Human-friendly name; shown in the Sales PIC dropdown and Sales filters." }
+        }
       },
-      "UserRoleList": { "type": "object", "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/UserRole" } } } },
-      "AddOn": { "type": "object", "properties": { "label": { "type": "string" }, "value": { "type": "string", "nullable": true } } },
+      "UserRoleList": { "type": "object", "properties": {"users": {"type": "array", "items": {"$ref": "#/components/schemas/UserRole"}}} },
+      "AddOn": { "type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string", "nullable": true}} },
       "SubmissionRow": {
         "type": "object",
         "properties": {
@@ -284,7 +294,10 @@
           "target_rate": { "type": "number", "nullable": true },
           "final_rate": { "type": "number", "nullable": true },
           "remarks": { "type": "string" },
-          "matched_vendor": { "type": "string", "nullable": true }
+          "matched_vendor": { "type": "string", "nullable": true },
+          "min_dedicated_trip": { "type": "integer", "nullable": true, "description": "Optional, per month; informational." },
+          "min_trip": { "type": "integer", "nullable": true, "description": "Optional, per month; informational." },
+          "raised_to_vm": { "type": "boolean", "description": "True while an open VM ticket exists for this row (e.g. auto-raised because the lane has fewer than 2 vendors)." }
         }
       },
       "Submission": {
@@ -300,16 +313,14 @@
           "potential_monthly_revenue": { "type": "number", "nullable": true },
           "commodity_type": { "type": "string", "nullable": true },
           "high_value_fragile": { "type": "boolean" },
-          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
+          "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
+          "sales_email": { "type": "string", "nullable": true, "description": "The sales user this submission belongs to; null on legacy submissions that only have a typed sales_pic." }
         }
       },
-      "SubmissionList": { "type": "object", "properties": { "submissions": { "type": "array", "items": { "$ref": "#/components/schemas/Submission" } } } },
+      "SubmissionList": { "type": "object", "properties": {"submissions": {"type": "array", "items": {"$ref": "#/components/schemas/Submission"}}} },
       "SubmissionDetail": {
         "type": "object",
-        "properties": {
-          "submission": { "$ref": "#/components/schemas/Submission" },
-          "rows": { "type": "array", "items": { "$ref": "#/components/schemas/SubmissionRow" } }
-        }
+        "properties": { "submission": {"$ref": "#/components/schemas/Submission"}, "rows": {"type": "array", "items": {"$ref": "#/components/schemas/SubmissionRow"}} }
       },
       "VmRequestIn": {
         "type": "object",
@@ -348,10 +359,21 @@
           "commodity_type": { "type": "string", "nullable": true },
           "high_value_fragile": { "type": "boolean", "nullable": true },
           "submission_created_at": { "type": "string", "nullable": true },
-          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
+          "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
+          "sales_email": { "type": "string", "nullable": true },
+          "min_dedicated_trip": { "type": "integer", "nullable": true },
+          "min_trip": { "type": "integer", "nullable": true },
+          "auto_closed_sla": { "type": "boolean", "description": "Closed automatically after 7 days with no VM action." },
+          "vendor_count": { "type": "integer", "nullable": true, "description": "VM views only." },
+          "only_one_vendor": { "type": "boolean", "description": "VM views only: the lane has exactly one vendor." },
+          "single_vendor_approved": { "type": "boolean", "description": "VM views only." },
+          "override_reason": { "type": "string", "nullable": true, "description": "VM views only." },
+          "override_by": { "type": "string", "nullable": true, "description": "VM views only." },
+          "winner_basis": { "type": "string", "nullable": true, "description": "VM views only: e.g. '2nd cheapest of 3 vendors'." },
+          "ranked_vendors": { "type": "array", "description": "VM views only: full ranked vendor list at pricing time.", "items": {"$ref": "#/components/schemas/RankedVendor"} }
         }
       },
-      "VmRequestList": { "type": "object", "properties": { "requests": { "type": "array", "items": { "$ref": "#/components/schemas/VmRequest" } } } },
+      "VmRequestList": { "type": "object", "properties": {"requests": {"type": "array", "items": {"$ref": "#/components/schemas/VmRequest"}}} },
       "LaneItem": {
         "type": "object",
         "properties": {
@@ -367,15 +389,31 @@
           "final_rate": { "type": "number", "nullable": true },
           "remarks": { "type": "string" },
           "matched_vendor": { "type": "string", "nullable": true },
-          "vm_status": { "type": "string", "nullable": true, "enum": ["open", "in_progress", null], "description": "Set only when there's a currently open/in_progress VM request for this lane." },
+          "vm_status": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["open", "in_progress", null],
+            "description": "Set only when there's a currently open/in_progress VM request for this lane."
+          },
           "vm_request_id": { "type": "integer", "nullable": true },
           "aging_days": { "type": "integer", "nullable": true },
-          "add_ons": { "type": "array", "items": { "$ref": "#/components/schemas/AddOn" } }
+          "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
+          "sales_email": { "type": "string", "nullable": true },
+          "min_dedicated_trip": { "type": "integer", "nullable": true },
+          "min_trip": { "type": "integer", "nullable": true },
+          "auto_closed_sla": { "type": "boolean" }
         }
       },
-      "LaneList": { "type": "object", "properties": { "lanes": { "type": "array", "items": { "$ref": "#/components/schemas/LaneItem" } } } },
-      "DirectoryUser": { "type": "object", "properties": { "email": { "type": "string" }, "role": { "type": "string" } } },
-      "DirectoryUserList": { "type": "object", "properties": { "users": { "type": "array", "items": { "$ref": "#/components/schemas/DirectoryUser" } } } },
+      "LaneList": { "type": "object", "properties": {"lanes": {"type": "array", "items": {"$ref": "#/components/schemas/LaneItem"}}} },
+      "DirectoryUser": {
+        "type": "object",
+        "properties": {
+          "email": { "type": "string" },
+          "role": { "type": "string" },
+          "display_name": { "type": "string", "nullable": true, "description": "Human-friendly name; shown in the Sales PIC dropdown and Sales filters." }
+        }
+      },
+      "DirectoryUserList": { "type": "object", "properties": {"users": {"type": "array", "items": {"$ref": "#/components/schemas/DirectoryUser"}}} },
       "NotificationItem": {
         "type": "object",
         "properties": {
@@ -389,16 +427,10 @@
       },
       "NotificationList": {
         "type": "object",
-        "properties": {
-          "notifications": { "type": "array", "items": { "$ref": "#/components/schemas/NotificationItem" } },
-          "unread_count": { "type": "integer" }
-        }
+        "properties": { "notifications": {"type": "array", "items": {"$ref": "#/components/schemas/NotificationItem"}}, "unread_count": {"type": "integer"} }
       },
-      "TicketViewItem": {
-        "type": "object",
-        "properties": { "submission_id": { "type": "integer" }, "last_viewed_at": { "type": "string" } }
-      },
-      "TicketViewList": { "type": "object", "properties": { "views": { "type": "array", "items": { "$ref": "#/components/schemas/TicketViewItem" } } } },
+      "TicketViewItem": { "type": "object", "properties": {"submission_id": {"type": "integer"}, "last_viewed_at": {"type": "string"}} },
+      "TicketViewList": { "type": "object", "properties": {"views": {"type": "array", "items": {"$ref": "#/components/schemas/TicketViewItem"}}} },
       "VmRequestUpdate": {
         "type": "object",
         "properties": {
@@ -407,8 +439,8 @@
           "resolved_cost": { "type": "number", "nullable": true }
         }
       },
-      "VendorCostIn": { "type": "object", "required": ["vendor_name", "cost"], "properties": { "vendor_name": { "type": "string" }, "cost": { "type": "number" } } },
-      "VmResolveIn": { "type": "object", "required": ["vendor_costs"], "properties": { "vendor_costs": { "type": "array", "items": { "$ref": "#/components/schemas/VendorCostIn" } } } },
+      "VendorCostIn": { "type": "object", "required": ["vendor_name", "cost"], "properties": {"vendor_name": {"type": "string"}, "cost": {"type": "number"}} },
+      "VmResolveIn": { "type": "object", "required": ["vendor_costs"], "properties": {"vendor_costs": {"type": "array", "items": {"$ref": "#/components/schemas/VendorCostIn"}}} },
       "LaneSummary": {
         "type": "object",
         "properties": {
@@ -416,11 +448,7 @@
           "destination": { "type": "string" },
           "vehicle_type": { "type": "string" },
           "request_count": { "type": "integer" },
-          "avg_target_rate": {
-            "type": "number",
-            "nullable": true,
-            "description": "Average target_rate across the requests grouped into this lane (seeking_lower_rate bucket only)."
-          }
+          "avg_target_rate": { "type": "number", "nullable": true, "description": "Average target_rate across the requests grouped into this lane (seeking_lower_rate bucket only)." }
         }
       },
       "MasterRateUploadResult": {
@@ -430,13 +458,7 @@
           "resolved_count": { "type": "integer", "description": "How many open/in_progress VM requests were auto-resolved by this upload." }
         }
       },
-      "ResolveReadyResult": {
-        "type": "object",
-        "properties": {
-          "checked_count": { "type": "integer" },
-          "resolved_count": { "type": "integer" }
-        }
-      },
+      "ResolveReadyResult": { "type": "object", "properties": {"checked_count": {"type": "integer"}, "resolved_count": {"type": "integer"}} },
       "MasterRateMeta": {
         "type": "object",
         "properties": {
@@ -458,8 +480,8 @@
           "updated_at": { "type": "string" }
         }
       },
-      "VendorRateList": { "type": "object", "properties": { "rates": { "type": "array", "items": { "$ref": "#/components/schemas/VendorRate" } } } },
-      "CommentIn": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" } } },
+      "VendorRateList": { "type": "object", "properties": {"rates": {"type": "array", "items": {"$ref": "#/components/schemas/VendorRate"}}} },
+      "CommentIn": { "type": "object", "required": ["message"], "properties": {"message": {"type": "string"}} },
       "Comment": {
         "type": "object",
         "properties": {
@@ -470,8 +492,8 @@
           "created_at": { "type": "string" }
         }
       },
-      "CommentList": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/Comment" } } } },
-      "SubmissionCommentIn": { "type": "object", "required": ["message"], "properties": { "message": { "type": "string" } } },
+      "CommentList": { "type": "object", "properties": {"comments": {"type": "array", "items": {"$ref": "#/components/schemas/Comment"}}} },
+      "SubmissionCommentIn": { "type": "object", "required": ["message"], "properties": {"message": {"type": "string"}} },
       "SubmissionComment": {
         "type": "object",
         "properties": {
@@ -482,14 +504,21 @@
           "created_at": { "type": "string" }
         }
       },
-      "SubmissionCommentList": { "type": "object", "properties": { "comments": { "type": "array", "items": { "$ref": "#/components/schemas/SubmissionComment" } } } },
+      "SubmissionCommentList": { "type": "object", "properties": {"comments": {"type": "array", "items": {"$ref": "#/components/schemas/SubmissionComment"}}} },
       "VmSummary": {
         "type": "object",
         "properties": {
-          "seeking_lower_rate": { "type": "array", "items": { "$ref": "#/components/schemas/LaneSummary" } },
-          "missing_lanes": { "type": "array", "items": { "$ref": "#/components/schemas/LaneSummary" } }
+          "seeking_lower_rate": { "type": "array", "items": {"$ref": "#/components/schemas/LaneSummary"} },
+          "missing_lanes": { "type": "array", "items": {"$ref": "#/components/schemas/LaneSummary"} }
         }
-      }
+      },
+      "RankedVendor": { "type": "object", "properties": {"vendor": {"type": "string"}, "cost": {"type": "number"}} },
+      "SingleVendorIn": {
+        "type": "object",
+        "properties": { "reason": {"type": "string", "description": "'No other vendor serves this lane', 'Dedicated/contract rate', or 'Other: <text>'."} },
+        "required": ["reason"]
+      },
+      "VendorNameList": { "type": "object", "properties": {"vendors": {"type": "array", "items": {"type": "string"}}} }
     }
   }
 }
