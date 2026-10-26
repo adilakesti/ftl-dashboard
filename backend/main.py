@@ -8,6 +8,7 @@ table (user_roles) keyed by email; an unprovisioned email is shown a
 import csv
 import io
 import json
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -25,7 +26,11 @@ import pricing
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with db.lifespan_pool():
-        yield
+        sweeper = asyncio.create_task(_sla_sweep_loop())
+        try:
+            yield
+        finally:
+            sweeper.cancel()
 
 
 app = FastAPI(title="FTL Pricing Dashboard", lifespan=lifespan)
@@ -103,6 +108,7 @@ async def me(request: Request):
 class UserRole(BaseModel):
     email: str
     role: str
+    display_name: str | None = None
 
 
 class UserRoleList(BaseModel):
@@ -112,15 +118,16 @@ class UserRoleList(BaseModel):
 class UserRoleIn(BaseModel):
     email: str
     role: str
+    display_name: str | None = None
 
 
 @app.get("/api/admin/users", response_model=UserRoleList)
 async def list_users(request: Request):
     await require_superadmin(request)
     async with db.pool().acquire() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT email, role FROM user_roles ORDER BY email")
+        await cur.execute("SELECT email, role, display_name FROM user_roles ORDER BY email")
         rows = await cur.fetchall()
-    return UserRoleList(users=[UserRole(email=r[0], role=r[1]) for r in rows])
+    return UserRoleList(users=[UserRole(email=r[0], role=r[1], display_name=r[2]) for r in rows])
 
 
 @app.post("/api/admin/users", response_model=UserRole, status_code=201)
@@ -131,12 +138,17 @@ async def upsert_user(body: UserRoleIn, request: Request):
     email = body.email.strip().lower()
     if not email:
         raise HTTPException(400, "email is required")
+    display_name = (body.display_name or "").strip() or None
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO user_roles (email, role) VALUES (%s, %s) ON DUPLICATE KEY UPDATE role = %s",
-            (email, body.role, body.role),
+            """INSERT INTO user_roles (email, role, display_name) VALUES (%s, %s, %s)
+               ON DUPLICATE KEY UPDATE role = VALUES(role),
+                   display_name = COALESCE(VALUES(display_name), display_name)""",
+            (email, body.role, display_name),
         )
-    return UserRole(email=email, role=body.role)
+        await cur.execute("SELECT display_name FROM user_roles WHERE email = %s", (email,))
+        row = await cur.fetchone()
+    return UserRole(email=email, role=body.role, display_name=row[0] if row else display_name)
 
 
 @app.delete("/api/admin/users/{email}", status_code=204)
@@ -144,6 +156,31 @@ async def delete_user(email: str, request: Request):
     await require_superadmin(request)
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM user_roles WHERE email = %s", (email,))
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers: pricing snapshot, system notes in the Discussion
+# ---------------------------------------------------------------------------
+
+SYSTEM_AUTHOR = "system"
+
+
+def _snapshot(result) -> tuple[str | None, str | None]:
+    """(winner basis, ranked vendor list as JSON) recorded on the row at pricing time."""
+    ranked_json = json.dumps([{"vendor": v, "cost": c} for v, c in result.ranked]) if result.ranked else None
+    return result.basis, ranked_json
+
+
+async def _system_comment(cur, submission_id: int, message: str) -> None:
+    """Automatic note in a shipper's Discussion. Never triggers @mention notifications."""
+    await cur.execute(
+        "INSERT INTO submission_comments (submission_id, author_email, message) VALUES (%s, %s, %s)",
+        (submission_id, SYSTEM_AUTHOR, message),
+    )
+
+
+def _idr(n: float) -> str:
+    return "Rp" + f"{n:,.0f}".replace(",", ".")
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +197,8 @@ class SubmissionRow(BaseModel):
     final_rate: float | None
     remarks: str
     matched_vendor: str | None
+    min_dedicated_trip: int | None = None
+    min_trip: int | None = None
 
 
 class AddOn(BaseModel):
@@ -174,6 +213,7 @@ class Submission(BaseModel):
     created_at: str
     shipper_name: str | None = None
     sales_pic: str | None = None
+    sales_email: str | None = None
     shipper_status: str | None = None
     potential_monthly_revenue: float | None = None
     commodity_type: str | None = None
@@ -198,7 +238,22 @@ CSV_HEADER_ALIASES = {
     "destination": "destination",
     "vehicle type": "vehicle_type",
     "target rate": "target_rate",
+    "minimum dedicated trip": "min_dedicated_trip",
+    "min dedicated trip": "min_dedicated_trip",
+    "minimum trip": "min_trip",
+    "min trip": "min_trip",
 }
+
+
+def _parse_whole_number(raw: str) -> int | None:
+    raw = (raw or "").replace(",", "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return int(value) if value >= 0 and value == int(value) else None
 
 
 def _parse_csv(content: bytes) -> list[dict]:
@@ -235,6 +290,8 @@ def _parse_csv(content: bytes) -> list[dict]:
                 "destination": row["destination"],
                 "vehicle_type": row["vehicle_type"],
                 "target_rate": target_rate,
+                "min_dedicated_trip": _parse_whole_number(row.get("min_dedicated_trip", "")),
+                "min_trip": _parse_whole_number(row.get("min_trip", "")),
             }
         )
     return rows
@@ -255,12 +312,13 @@ def _row_to_submission(r) -> Submission:
         commodity_type=r[8],
         high_value_fragile=bool(r[9]),
         add_ons=add_ons,
+        sales_email=r[11],
     )
 
 
 SUBMISSION_COLUMNS = (
     "id, uploaded_by, filename, created_at, shipper_name, sales_pic, shipper_status, "
-    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons"
+    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email"
 )
 
 
@@ -275,8 +333,16 @@ async def upload_submission(
     commodity_type: str | None = Form(None),
     high_value_fragile: bool = Form(False),
     add_ons_json: str | None = Form(None),
+    sales_email: str | None = Form(None),
 ):
     email = await require_role(request, "sales")
+    sales_email = (sales_email or "").strip().lower() or None
+    if sales_email:
+        async with db.pool().acquire() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT role FROM user_roles WHERE email = %s", (sales_email,))
+            urow = await cur.fetchone()
+        if not urow or urow[0] != "sales":
+            raise HTTPException(400, "Sales PIC must be a user with the sales role")
     content = await file.read()
     rows = _parse_csv(content)
     if not rows:
@@ -303,8 +369,8 @@ async def upload_submission(
         await cur.execute(
             """INSERT INTO submissions
                (uploaded_by, filename, shipper_name, sales_pic, shipper_status,
-                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 email,
                 file.filename,
@@ -315,6 +381,7 @@ async def upload_submission(
                 commodity_type,
                 high_value_fragile,
                 json.dumps(add_ons_list) if add_ons_list else None,
+                sales_email,
             ),
         )
         submission_id = cur.lastrowid
@@ -323,12 +390,14 @@ async def upload_submission(
         for row in rows:
             costs = await master_rates.find_costs(db.pool(), row["origin"], row["destination"], row["vehicle_type"])
             result = pricing.compute_final_rate(costs, row["target_rate"])
+            basis, ranked_json = _snapshot(result)
 
             await cur.execute(
                 """INSERT INTO submission_rows
                    (submission_id, origin, destination, vehicle_type, target_rate,
-                    final_rate, remarks, matched_vendor, matched_cost)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    final_rate, remarks, matched_vendor, matched_cost,
+                    min_dedicated_trip, min_trip, matched_basis, matched_ranked)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     submission_id,
                     row["origin"],
@@ -339,18 +408,34 @@ async def upload_submission(
                     result.remarks,
                     result.matched_vendor,
                     result.matched_cost,
+                    row["min_dedicated_trip"],
+                    row["min_trip"],
+                    basis,
+                    ranked_json,
                 ),
             )
+            row_id = cur.lastrowid
+            if result.single_vendor:
+                # Fewer than 2 vendors: sales sees no rate; the lane is raised to VM automatically.
+                await cur.execute(
+                    """INSERT INTO vm_requests
+                       (submission_row_id, origin, destination, vehicle_type, target_rate,
+                        current_final_rate, requested_by)
+                       VALUES (%s, %s, %s, %s, %s, NULL, %s)""",
+                    (row_id, row["origin"], row["destination"], row["vehicle_type"], row["target_rate"], email),
+                )
             result_rows.append(
                 SubmissionRow(
-                    id=cur.lastrowid,
+                    id=row_id,
                     origin=row["origin"],
                     destination=row["destination"],
                     vehicle_type=row["vehicle_type"],
                     target_rate=row["target_rate"],
                     final_rate=result.final_rate,
                     remarks=result.remarks,
-                    matched_vendor=result.matched_vendor,
+                    matched_vendor=result.matched_vendor if not result.single_vendor else None,
+                    min_dedicated_trip=row["min_dedicated_trip"],
+                    min_trip=row["min_trip"],
                 )
             )
 
@@ -392,7 +477,7 @@ async def get_submission(submission_id: int, request: Request):
 
         await cur.execute(
             """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
-                      remarks, matched_vendor
+                      remarks, matched_vendor, min_dedicated_trip, min_trip
                FROM submission_rows WHERE submission_id = %s ORDER BY id""",
             (submission_id,),
         )
@@ -410,6 +495,8 @@ async def get_submission(submission_id: int, request: Request):
                 final_rate=float(r[5]) if r[5] is not None else None,
                 remarks=r[6] or "",
                 matched_vendor=r[7],
+                min_dedicated_trip=r[8],
+                min_trip=r[9],
             )
             for r in rows
         ],
@@ -419,6 +506,11 @@ async def get_submission(submission_id: int, request: Request):
 # ---------------------------------------------------------------------------
 # VM requests
 # ---------------------------------------------------------------------------
+
+
+class RankedVendor(BaseModel):
+    vendor: str
+    cost: float
 
 
 class VmRequestIn(BaseModel):
@@ -454,6 +546,18 @@ class VmRequest(BaseModel):
     high_value_fragile: bool | None = None
     submission_created_at: str | None = None
     add_ons: list[AddOn] = []
+    sales_email: str | None = None
+    min_dedicated_trip: int | None = None
+    min_trip: int | None = None
+    auto_closed_sla: bool = False
+    # VM-only (left empty/None in the sales-facing views):
+    vendor_count: int | None = None
+    only_one_vendor: bool = False
+    single_vendor_approved: bool = False
+    override_reason: str | None = None
+    override_by: str | None = None
+    winner_basis: str | None = None
+    ranked_vendors: list["RankedVendor"] = []
 
 
 class VmRequestList(BaseModel):
@@ -477,14 +581,26 @@ VM_REQUEST_SELECT_FROM = """
     SELECT vr.id, vr.origin, vr.destination, vr.vehicle_type, vr.target_rate, vr.current_final_rate,
            vr.requested_by, vr.status, vr.resolved_vendor, vr.resolved_cost, vr.created_at,
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
-           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at, s.add_ons
+           s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at, s.add_ons,
+           s.sales_email, sr.min_dedicated_trip, sr.min_trip, sr.matched_basis, sr.matched_ranked,
+           vr.single_vendor_approved, vr.override_reason, vr.override_by, vr.auto_closed_sla
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
 """
 
 
-def _to_vm_request(r) -> VmRequest:
+async def _lane_vendor_counts(cur) -> dict[tuple[str, str, str], int]:
+    await cur.execute(
+        """SELECT norm_origin, norm_destination, norm_vehicle_type, COUNT(*)
+           FROM vendor_rates GROUP BY norm_origin, norm_destination, norm_vehicle_type"""
+    )
+    return {(r[0], r[1], r[2]): r[3] for r in await cur.fetchall()}
+
+
+def _to_vm_request(r, lane_counts: dict | None = None) -> VmRequest:
+    """lane_counts is passed only for VM-facing responses: it switches on the
+    VM-only fields (vendor count / "only 1 vendor" flag, winner basis, ranked list)."""
     target_rate = float(r[4]) if r[4] is not None else None
     created_at = r[10]
     aging_days = 0
@@ -515,7 +631,31 @@ def _to_vm_request(r) -> VmRequest:
         submission_id=r[18],
         submission_created_at=str(r[19]) if r[19] is not None else None,
         add_ons=[AddOn(**a) for a in json.loads(r[20])] if r[20] else [],
+        sales_email=r[21],
+        min_dedicated_trip=r[22],
+        min_trip=r[23],
+        auto_closed_sla=bool(r[29]),
+        **_vm_only_fields(r, lane_counts),
     )
+
+
+def _vm_only_fields(r, lane_counts: dict | None) -> dict:
+    if lane_counts is None:
+        return {}
+    key = (master_rates.norm(r[1]), master_rates.norm(r[2]), master_rates.norm(r[3]))
+    count = lane_counts.get(key, 0)
+    ranked = []
+    if r[25]:
+        ranked = [RankedVendor(**v) for v in json.loads(r[25])]
+    return {
+        "vendor_count": count,
+        "only_one_vendor": count == 1,
+        "single_vendor_approved": bool(r[26]),
+        "override_reason": r[27],
+        "override_by": r[28],
+        "winner_basis": r[24],
+        "ranked_vendors": ranked,
+    }
 
 
 @app.post("/api/vm-requests", response_model=VmRequest, status_code=201)
@@ -549,10 +689,12 @@ async def list_vm_requests(request: Request):
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""{VM_REQUEST_SELECT_FROM}
-                ORDER BY (vr.status IN ('resolved', 'closed_no_vendor')), vr.created_at ASC"""
+                ORDER BY (vr.status IN ('resolved', 'closed_no_vendor', 'closed_no_lower_rate')),
+                         vr.created_at ASC"""
         )
         rows = await cur.fetchall()
-    return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+        counts = await _lane_vendor_counts(cur)
+    return VmRequestList(requests=[_to_vm_request(r, counts) for r in rows])
 
 
 VM_STATUSES = ("open", "in_progress", "resolved", "closed_no_vendor", "closed_no_lower_rate")
@@ -591,12 +733,14 @@ async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Req
 
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
-    return _to_vm_request(row)
+        counts = await _lane_vendor_counts(cur)
+    return _to_vm_request(row, counts)
 
 
 async def _fetch_vm_request_raw(cur, request_id: int):
     await cur.execute(
-        """SELECT origin, destination, vehicle_type, target_rate, submission_row_id, current_final_rate
+        """SELECT origin, destination, vehicle_type, target_rate, submission_row_id, current_final_rate,
+                  single_vendor_approved
            FROM vm_requests WHERE id = %s""",
         (request_id,),
     )
@@ -610,7 +754,32 @@ async def _fetch_vm_request_raw(cur, request_id: int):
         "target_rate": row[3],
         "submission_row_id": row[4],
         "current_final_rate": float(row[5]) if row[5] is not None else None,
+        "single_vendor_approved": bool(row[6]),
     }
+
+
+async def _store_resolution(cur, request_id: int, row_id: int | None, result) -> None:
+    """Persist a priced result on the ticket and on the sales row it came from."""
+    basis, ranked_json = _snapshot(result)
+    await cur.execute(
+        """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
+           current_final_rate = %s WHERE id = %s""",
+        (result.matched_vendor, result.matched_cost, result.final_rate, request_id),
+    )
+    if row_id:
+        await cur.execute(
+            """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
+               matched_cost = %s, matched_basis = %s, matched_ranked = %s WHERE id = %s""",
+            (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, basis, ranked_json, row_id),
+        )
+
+
+async def _store_ranked_only(cur, row_id: int | None, result) -> None:
+    """The lane still can't be priced (fewer than 2 vendors): keep the ticket open,
+    just refresh the ranked-vendor snapshot VM sees."""
+    if row_id:
+        _, ranked_json = _snapshot(result)
+        await cur.execute("UPDATE submission_rows SET matched_ranked = %s WHERE id = %s", (ranked_json, row_id))
 
 
 async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float]], resolved_by: str) -> VmRequest:
@@ -632,63 +801,59 @@ async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float
         await master_rates.upsert_rows(pool, rows, resolved_by, None)
 
     costs = await master_rates.find_costs(pool, req["origin"], req["destination"], req["vehicle_type"])
-    result = pricing.compute_final_rate(costs, req["target_rate"])
+    result = pricing.compute_final_rate(
+        costs, req["target_rate"], allow_single=req["single_vendor_approved"]
+    )
 
     async with pool.acquire() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
-               current_final_rate = %s WHERE id = %s""",
-            (result.matched_vendor, result.matched_cost, result.final_rate, request_id),
-        )
-        if req["submission_row_id"]:
+        if result.final_rate is not None:
+            await _store_resolution(cur, request_id, req["submission_row_id"], result)
+        else:
+            # Still fewer than 2 vendors: the ticket stays open (flagged for VM), now in progress.
             await cur.execute(
-                """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
-                   matched_cost = %s WHERE id = %s""",
-                (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, req["submission_row_id"]),
+                "UPDATE vm_requests SET status = 'in_progress' WHERE id = %s AND status = 'open'", (request_id,)
             )
+            await _store_ranked_only(cur, req["submission_row_id"], result)
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
+        counts = await _lane_vendor_counts(cur)
 
     await _auto_resolve_matching(pool, {(master_rates.norm(req["origin"]), master_rates.norm(req["destination"]), master_rates.norm(req["vehicle_type"]))}, resolved_by)
-    return _to_vm_request(row)
+    return _to_vm_request(row, counts)
 
 
 async def _auto_resolve_matching(pool, lane_keys: set[tuple[str, str, str]], resolved_by: str) -> int:
     """Resolve every open/in_progress request whose lane is in lane_keys and now
-    has master-rate cost data — used after a master-rate upload (or a per-request
+    has at least 2 vendors in the master data (or 1, if VM approved using the
+    single vendor) — used after a master-rate upload (or a per-request
     resolution) so sibling requests for the same OD+vehicle across other sales
     don't need to be filled in one by one."""
     if not lane_keys:
         return 0
     async with pool.acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, origin, destination, vehicle_type, target_rate, submission_row_id "
+            "SELECT id, origin, destination, vehicle_type, target_rate, submission_row_id, single_vendor_approved "
             "FROM vm_requests WHERE status IN ('open', 'in_progress')"
         )
         rows = await cur.fetchall()
 
     resolved = 0
     for r in rows:
-        req_id, origin, destination, vehicle_type, target_rate, submission_row_id = r
+        req_id, origin, destination, vehicle_type, target_rate, submission_row_id, approved = r
         key = (master_rates.norm(origin), master_rates.norm(destination), master_rates.norm(vehicle_type))
         if key not in lane_keys:
             continue
         costs = await master_rates.find_costs(pool, origin, destination, vehicle_type)
         if not costs:
             continue
-        result = pricing.compute_final_rate(costs, float(target_rate) if target_rate is not None else None)
+        result = pricing.compute_final_rate(
+            costs, float(target_rate) if target_rate is not None else None, allow_single=bool(approved)
+        )
         async with pool.acquire() as conn, conn.cursor() as cur:
-            await cur.execute(
-                """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
-                   current_final_rate = %s WHERE id = %s""",
-                (result.matched_vendor, result.matched_cost, result.final_rate, req_id),
-            )
-            if submission_row_id:
-                await cur.execute(
-                    """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
-                       matched_cost = %s WHERE id = %s""",
-                    (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, submission_row_id),
-                )
+            if result.final_rate is None:
+                await _store_ranked_only(cur, submission_row_id, result)
+                continue
+            await _store_resolution(cur, req_id, submission_row_id, result)
         resolved += 1
     return resolved
 
@@ -740,6 +905,58 @@ async def resolve_vm_request_upload(request_id: int, request: Request, file: Upl
     return await _apply_resolution(request_id, matching, email)
 
 
+SINGLE_VENDOR_REASONS = ("No other vendor serves this lane", "Dedicated/contract rate")
+
+
+class SingleVendorIn(BaseModel):
+    reason: str
+
+
+@app.post("/api/vm/requests/{request_id}/use-single-vendor", response_model=VmRequest)
+async def use_single_vendor(request_id: int, body: SingleVendorIn, request: Request):
+    """VM approves pricing a lane from its one and only vendor. Approval applies
+    to this ticket only (not the lane in general): sales then sees the rate with
+    a neutral "Confirmed by VM" remark, and the Discussion gets an automatic note."""
+    email = await require_role(request, "vm")
+    reason = body.reason.strip()
+    if not reason or not (reason in SINGLE_VENDOR_REASONS or reason.startswith("Other")):
+        raise HTTPException(400, "A reason is required")
+    pool = db.pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        req = await _fetch_vm_request_raw(cur, request_id)
+        await cur.execute("SELECT status FROM vm_requests WHERE id = %s", (request_id,))
+        if (await cur.fetchone())[0] not in ("open", "in_progress"):
+            raise HTTPException(400, "This ticket is already closed")
+
+    costs = await master_rates.find_costs(pool, req["origin"], req["destination"], req["vehicle_type"])
+    if len(costs) != 1:
+        raise HTTPException(400, "This lane does not have exactly one vendor")
+    result = pricing.compute_final_rate(costs, req["target_rate"], allow_single=True)
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await _store_resolution(cur, request_id, req["submission_row_id"], result)
+        await cur.execute(
+            """UPDATE vm_requests SET single_vendor_approved = 1, override_reason = %s, override_by = %s
+               WHERE id = %s""",
+            (reason[:255], email, request_id),
+        )
+        if req["submission_row_id"]:
+            await cur.execute("SELECT submission_id FROM submission_rows WHERE id = %s", (req["submission_row_id"],))
+            srow = await cur.fetchone()
+            if srow:
+                await _system_comment(
+                    cur,
+                    srow[0],
+                    f"{email} approved using the single vendor for {req['origin']} → {req['destination']} "
+                    f"({req['vehicle_type']}): {result.matched_vendor} at {_idr(result.matched_cost)}. "
+                    f"Reason: {reason}.",
+                )
+        await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
+        row = await cur.fetchone()
+        counts = await _lane_vendor_counts(cur)
+    return _to_vm_request(row, counts)
+
+
 @app.post("/api/vm/requests/{request_id}/close-no-vendor", response_model=VmRequest)
 async def close_vm_request_no_vendor(request_id: int, request: Request):
     """VM declines to find a vendor for this lane. Two distinct cases:
@@ -778,7 +995,8 @@ async def close_vm_request_no_vendor(request_id: int, request: Request):
 
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
-    return _to_vm_request(row)
+        counts = await _lane_vendor_counts(cur)
+    return _to_vm_request(row, counts)
 
 
 class ResolveReadyResult(BaseModel):
@@ -918,6 +1136,16 @@ async def get_master_rates(request: Request):
     return VendorRateList(rates=[VendorRate(**r) for r in rows])
 
 
+class VendorNameList(BaseModel):
+    vendors: list[str]
+
+
+@app.get("/api/master-rates/vendors", response_model=VendorNameList)
+async def master_rate_vendors(request: Request):
+    await require_role(request, "vm")
+    return VendorNameList(vendors=await master_rates.list_vendor_names(db.pool()))
+
+
 @app.get("/api/master-rates/export")
 async def export_master_rates(request: Request):
     await require_role(request, "vm")
@@ -989,6 +1217,10 @@ class LaneItem(BaseModel):
     vm_request_id: int | None
     aging_days: int | None
     add_ons: list[AddOn] = []
+    sales_email: str | None = None
+    min_dedicated_trip: int | None = None
+    min_trip: int | None = None
+    auto_closed_sla: bool = False
 
 
 class LaneList(BaseModel):
@@ -1008,7 +1240,9 @@ async def my_lanes(request: Request):
         await cur.execute(
             """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
                       sr.vehicle_type, sr.target_rate, sr.final_rate, sr.remarks, sr.matched_vendor,
-                      vr.status, vr.id, vr.created_at, s.created_at, s.add_ons
+                      vr.status, vr.id, vr.created_at, s.created_at, s.add_ons,
+                      s.sales_email, sr.min_dedicated_trip, sr.min_trip,
+                      (SELECT MAX(auto_closed_sla) FROM vm_requests WHERE submission_row_id = sr.id)
                FROM submission_rows sr
                JOIN submissions s ON sr.submission_id = s.id
                LEFT JOIN vm_requests vr ON vr.id = (
@@ -1047,6 +1281,10 @@ async def my_lanes(request: Request):
                 vm_request_id=r[12],
                 aging_days=aging,
                 add_ons=[AddOn(**a) for a in json.loads(r[15])] if r[15] else [],
+                sales_email=r[16],
+                min_dedicated_trip=r[17],
+                min_trip=r[18],
+                auto_closed_sla=bool(r[19]),
             )
         )
     return LaneList(lanes=lanes)
@@ -1065,7 +1303,7 @@ async def submission_quotation(submission_id: int, request: Request):
             raise HTTPException(404, "Submission not found")
 
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, final_rate, remarks
+            """SELECT origin, destination, vehicle_type, final_rate, remarks, min_dedicated_trip, min_trip
                FROM submission_rows WHERE submission_id = %s AND final_rate IS NOT NULL
                ORDER BY id""",
             (submission_id,),
@@ -1082,9 +1320,14 @@ async def submission_quotation(submission_id: int, request: Request):
     ws.append(["Sales PIC", submission.sales_pic or ""])
     ws.append(["Date", submission.created_at])
     ws.append([])
-    ws.append(["Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks"])
+    ws.append(
+        [
+            "Origin", "Destination", "Vehicle Type", "Final Rate (IDR)", "Remarks",
+            "Min Dedicated Trip / month", "Min Trip / month",
+        ]
+    )
     for r in rows:
-        ws.append([r[0], r[1], r[2], float(r[3]), r[4] or ""])
+        ws.append([r[0], r[1], r[2], float(r[3]), r[4] or "", r[5], r[6]])
 
     if submission.add_ons:
         ws.append([])
@@ -1266,6 +1509,76 @@ async def create_submission_comment(submission_id: int, body: SubmissionCommentI
 
 
 # ---------------------------------------------------------------------------
+# SLA: tickets VM never touched are auto-closed after 7 days, per lane.
+# No sales notification — the outcome shows on the lane and in the Discussion.
+# ---------------------------------------------------------------------------
+
+SLA_DAYS = 7
+SLA_SWEEP_INTERVAL_SECONDS = 3600
+SLA_REMARK = "No vendor available (auto closed by SLA)"
+
+
+async def run_sla_sweep() -> int:
+    """Close every still-untouched (status 'open') ticket older than SLA_DAYS.
+    Lanes that already had a Final Rate keep it (closed_no_lower_rate); lanes
+    that never had one close as closed_no_vendor. Each ticket is claimed with a
+    conditional UPDATE, so concurrent replicas can't double-close or double-note."""
+    closed_by_submission: dict[int, list[str]] = {}
+    count = 0
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"""SELECT vr.id, vr.submission_row_id, vr.current_final_rate, vr.origin, vr.destination,
+                       vr.vehicle_type, sr.submission_id
+                FROM vm_requests vr
+                LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
+                WHERE vr.status = 'open' AND vr.created_at <= NOW() - INTERVAL {SLA_DAYS} DAY"""
+        )
+        due = await cur.fetchall()
+        for req_id, row_id, current_rate, origin, destination, vehicle, submission_id in due:
+            had_rate = current_rate is not None
+            new_status = "closed_no_lower_rate" if had_rate else "closed_no_vendor"
+            await cur.execute(
+                """UPDATE vm_requests SET status = %s, auto_closed_sla = 1, resolved_vendor = NULL,
+                   resolved_cost = NULL, current_final_rate = IF(%s, current_final_rate, NULL)
+                   WHERE id = %s AND status = 'open'""",
+                (new_status, 1 if had_rate else 0, req_id),
+            )
+            if cur.rowcount == 0:
+                continue
+            count += 1
+            if not had_rate and row_id:
+                await cur.execute(
+                    """UPDATE submission_rows SET final_rate = NULL, remarks = %s, matched_vendor = NULL,
+                       matched_cost = NULL WHERE id = %s""",
+                    (SLA_REMARK, row_id),
+                )
+            if submission_id:
+                outcome = "kept existing rate" if had_rate else "no vendor available"
+                closed_by_submission.setdefault(submission_id, []).append(
+                    f"{origin} → {destination} ({vehicle}): {outcome}"
+                )
+        for submission_id, lines in closed_by_submission.items():
+            await _system_comment(
+                cur,
+                submission_id,
+                f"Auto-closed by SLA after {SLA_DAYS} days with no VM action — "
+                + "; ".join(lines),
+            )
+    return count
+
+
+async def _sla_sweep_loop() -> None:
+    while True:
+        try:
+            await run_sla_sweep()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # keep the loop alive; the next tick retries
+            print(f"SLA sweep failed: {exc!r}", flush=True)
+        await asyncio.sleep(SLA_SWEEP_INTERVAL_SECONDS)
+
+
+# ---------------------------------------------------------------------------
 # Users (for @mention lookup), notifications, and per-user "seen" tracking
 # ---------------------------------------------------------------------------
 
@@ -1273,6 +1586,7 @@ async def create_submission_comment(submission_id: int, body: SubmissionCommentI
 class DirectoryUser(BaseModel):
     email: str
     role: str
+    display_name: str | None = None
 
 
 class DirectoryUserList(BaseModel):
@@ -1284,9 +1598,11 @@ async def list_directory_users(request: Request):
     """Any provisioned user: the full roster, for @mention autocomplete."""
     await require_any_role(request)
     async with db.pool().acquire() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT email, role FROM user_roles ORDER BY email")
+        await cur.execute("SELECT email, role, display_name FROM user_roles ORDER BY email")
         rows = await cur.fetchall()
-    return DirectoryUserList(users=[DirectoryUser(email=r[0], role=r[1]) for r in rows])
+    return DirectoryUserList(
+        users=[DirectoryUser(email=r[0], role=r[1], display_name=r[2]) for r in rows]
+    )
 
 
 class NotificationItem(BaseModel):

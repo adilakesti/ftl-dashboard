@@ -150,3 +150,10 @@ async def last_upload_meta(pool) -> dict | None:
     if not row:
         return None
     return {"uploaded_by": row[0], "filename": row[1], "row_count": row[2], "created_at": str(row[3])}
+
+
+async def list_vendor_names(pool) -> list[str]:
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT MIN(vendor_name) FROM vendor_rates GROUP BY norm_vendor_name ORDER BY 1")
+        rows = await cur.fetchall()
+    return [r[0] for r in rows]
