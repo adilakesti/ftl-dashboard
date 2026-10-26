@@ -91,14 +91,14 @@ const DEFAULT_SHIPPER_FORM = {
 
 const ADD_ON_RATES = {
   rdo: { jawa: 7000, luar_jawa: 14000 },
-  overnight: 560000,
-  additional_drop: { intra_jawa: 270000, intra_ex_jawa: 360000 },
+  overnight: 1000000,
+  additional_drop: 500000,
 };
 
 const DEFAULT_ADD_ONS_STATE = {
   rdo: { checked: false, region: "jawa", qty: "" },
   overnight: { checked: false },
-  additional_drop: { checked: false, region: "intra_jawa", qty: "" },
+  additional_drop: { checked: false, qty: "" },
   custom: { checked: false, label: "", value: "" },
 };
 
@@ -119,11 +119,10 @@ function buildAddOns(a) {
   }
   if (a.additional_drop.checked) {
     const qty = Number(a.additional_drop.qty) || 0;
-    const rate = ADD_ON_RATES.additional_drop[a.additional_drop.region];
-    const regionLabel = a.additional_drop.region === "intra_jawa" ? "Intra Jawa" : "Intra Ex Jawa";
+    const rate = ADD_ON_RATES.additional_drop;
     out.push({
       label: "Additional Drop Point",
-      value: `${qty} point x ${idr(rate)} (${regionLabel}) = ${idr(qty * rate)}`,
+      value: `${qty} point x ${idr(rate)} (same city) = ${idr(qty * rate)}`,
     });
   }
   if (a.custom.checked && a.custom.label.trim()) {
@@ -904,23 +903,10 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                           }))
                         }
                       />
-                      Additional Drop Point (Rp270,000 Intra Jawa, Rp360,000 Intra Ex Jawa)
+                      Additional Drop Point (Rp500,000 per point, same city)
                     </label>
                     {addOnsState.additional_drop.checked && (
                       <div className="flex gap-3 pl-6 mt-1">
-                        <select
-                          className="border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.additional_drop.region}
-                          onChange={(e) =>
-                            setAddOnsState((a) => ({
-                              ...a,
-                              additional_drop: { ...a.additional_drop, region: e.target.value },
-                            }))
-                          }
-                        >
-                          <option value="intra_jawa">Intra Jawa</option>
-                          <option value="intra_ex_jawa">Intra Ex Jawa</option>
-                        </select>
                         <input
                           type="number"
                           min="0"
@@ -938,8 +924,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                           <span className="text-xs text-ink-400 self-center">
                             ={" "}
                             {idr(
-                              (Number(addOnsState.additional_drop.qty) || 0) *
-                                ADD_ON_RATES.additional_drop[addOnsState.additional_drop.region]
+                              (Number(addOnsState.additional_drop.qty) || 0) * ADD_ON_RATES.additional_drop
                             )}
                           </span>
                         )}
