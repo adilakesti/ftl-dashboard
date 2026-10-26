@@ -7,15 +7,17 @@ Rules:
     unless VM explicitly approved using that one vendor (allow_single=True).
   - Target rate given:
       1. pick the vendor cost closest to the target rate
-      2. margin it at 11.1%; if that result <= target rate, use it (remarks: "Meets target")
-      3. otherwise, margin the SAME cost at 5%, remarks: "Already bottom rate"
+      2. mark it up 11.1% (10% margin + 1.1% PPN); if that result <= target rate, use it (remarks: "Meets target")
+      3. otherwise, mark the SAME cost up 6.1% (5% margin + 1.1% PPN), remarks: "Already bottom rate"
   - No target rate:
       pick the 2nd-cheapest vendor cost ("second winner"), margin at 11.1%
 """
 from dataclasses import dataclass, field
 
 MARGIN_STANDARD = 1.111
-MARGIN_BOTTOM = 1.05
+MARGIN_BOTTOM = 1.061
+MARGIN_PCT_STANDARD = 11.1
+MARGIN_PCT_BOTTOM = 6.1
 
 REMARK_PENDING_VM = "Sent to VM for review"
 REMARK_VM_CONFIRMED = "Confirmed by VM"
@@ -30,6 +32,7 @@ class PricingResult:
     basis: str | None = None
     ranked: list[tuple[str, float]] = field(default_factory=list)
     single_vendor: bool = False
+    margin_pct: float | None = None
 
 
 def compute_final_rate(
@@ -55,13 +58,13 @@ def compute_final_rate(
         basis = "Only vendor (VM approved)" if single else f"Closest to target of {n} vendors"
         standard = round(cost * MARGIN_STANDARD, 2)
         if standard <= target_rate:
-            final, remarks = standard, "Meets target"
+            final, remarks, margin_pct = standard, "Meets target", MARGIN_PCT_STANDARD
         else:
-            final, remarks = round(cost * MARGIN_BOTTOM, 2), "Already bottom rate"
+            final, remarks, margin_pct = round(cost * MARGIN_BOTTOM, 2), "Already bottom rate", MARGIN_PCT_BOTTOM
     else:
         vendor, cost = ranked[0] if single else ranked[1]
         basis = "Only vendor (VM approved)" if single else f"2nd cheapest of {n} vendors"
-        final, remarks = round(cost * MARGIN_STANDARD, 2), ""
+        final, remarks, margin_pct = round(cost * MARGIN_STANDARD, 2), "", MARGIN_PCT_STANDARD
 
     if single:
         remarks = REMARK_VM_CONFIRMED
@@ -73,4 +76,5 @@ def compute_final_rate(
         basis=basis,
         ranked=ranked,
         single_vendor=single,
+        margin_pct=margin_pct,
     )

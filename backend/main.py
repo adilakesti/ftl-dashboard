@@ -199,6 +199,7 @@ class SubmissionRow(BaseModel):
     matched_vendor: str | None
     min_trip: int | None = None
     raised_to_vm: bool = False
+    needs_vm: bool = False
 
 
 class AddOn(BaseModel):
@@ -214,6 +215,7 @@ class Submission(BaseModel):
     shipper_name: str | None = None
     sales_pic: str | None = None
     sales_email: str | None = None
+    submitted_at: str | None = None
     shipper_status: str | None = None
     potential_monthly_revenue: float | None = None
     commodity_type: str | None = None
@@ -310,12 +312,13 @@ def _row_to_submission(r) -> Submission:
         high_value_fragile=bool(r[9]),
         add_ons=add_ons,
         sales_email=r[11],
+        submitted_at=str(r[12]) if r[12] else None,
     )
 
 
 SUBMISSION_COLUMNS = (
     "id, uploaded_by, filename, created_at, shipper_name, sales_pic, shipper_status, "
-    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email"
+    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, submitted_at"
 )
 
 
@@ -393,8 +396,8 @@ async def upload_submission(
                 """INSERT INTO submission_rows
                    (submission_id, origin, destination, vehicle_type, target_rate,
                     final_rate, remarks, matched_vendor, matched_cost,
-                    min_trip, matched_basis, matched_ranked)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    min_trip, matched_basis, matched_ranked, margin_pct)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     submission_id,
                     row["origin"],
@@ -408,18 +411,10 @@ async def upload_submission(
                     row["min_trip"],
                     basis,
                     ranked_json,
+                    result.margin_pct,
                 ),
             )
             row_id = cur.lastrowid
-            if result.single_vendor:
-                # Fewer than 2 vendors: sales sees no rate; the lane is raised to VM automatically.
-                await cur.execute(
-                    """INSERT INTO vm_requests
-                       (submission_row_id, origin, destination, vehicle_type, target_rate,
-                        current_final_rate, requested_by)
-                       VALUES (%s, %s, %s, %s, %s, NULL, %s)""",
-                    (row_id, row["origin"], row["destination"], row["vehicle_type"], row["target_rate"], email),
-                )
             result_rows.append(
                 SubmissionRow(
                     id=row_id,
@@ -431,7 +426,8 @@ async def upload_submission(
                     remarks=result.remarks,
                     matched_vendor=result.matched_vendor if not result.single_vendor else None,
                     min_trip=row["min_trip"],
-                    raised_to_vm=result.single_vendor,
+                    raised_to_vm=False,
+                    needs_vm=result.single_vendor,
                 )
             )
 
@@ -459,28 +455,24 @@ async def list_submissions(request: Request):
     return SubmissionList(submissions=[_row_to_submission(r) for r in rows])
 
 
-@app.get("/api/submissions/{submission_id}", response_model=SubmissionDetail)
-async def get_submission(submission_id: int, request: Request):
-    email = await require_role(request, "sales")
-    async with db.pool().acquire() as conn, conn.cursor() as cur:
-        await cur.execute(
-            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
-            (submission_id, email),
-        )
-        srow = await cur.fetchone()
-        if not srow:
-            raise HTTPException(404, "Submission not found")
+async def _load_submission_detail(cur, submission_id: int, email: str) -> SubmissionDetail:
+    await cur.execute(
+        f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
+        (submission_id, email),
+    )
+    srow = await cur.fetchone()
+    if not srow:
+        raise HTTPException(404, "Submission not found")
 
-        await cur.execute(
-            """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
-                      remarks, matched_vendor, min_trip,
-                      EXISTS(SELECT 1 FROM vm_requests vr WHERE vr.submission_row_id = submission_rows.id
-                             AND vr.status IN ('open', 'in_progress'))
-               FROM submission_rows WHERE submission_id = %s ORDER BY id""",
-            (submission_id,),
-        )
-        rows = await cur.fetchall()
-
+    await cur.execute(
+        """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
+                  remarks, matched_vendor, min_trip,
+                  EXISTS(SELECT 1 FROM vm_requests vr WHERE vr.submission_row_id = submission_rows.id
+                         AND vr.status IN ('open', 'in_progress'))
+           FROM submission_rows WHERE submission_id = %s ORDER BY id""",
+        (submission_id,),
+    )
+    rows = await cur.fetchall()
     return SubmissionDetail(
         submission=_row_to_submission(srow),
         rows=[
@@ -495,10 +487,84 @@ async def get_submission(submission_id: int, request: Request):
                 matched_vendor=r[7],
                 min_trip=r[8],
                 raised_to_vm=bool(r[9]),
+                needs_vm=r[5] is None and r[6] == pricing.REMARK_PENDING_VM and not r[9],
             )
             for r in rows
         ],
     )
+
+
+@app.get("/api/submissions/{submission_id}", response_model=SubmissionDetail)
+async def get_submission(submission_id: int, request: Request):
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        return await _load_submission_detail(cur, submission_id, email)
+
+
+class SubmitIn(BaseModel):
+    ask_vm_row_ids: list[int] = []
+
+
+@app.post("/api/submissions/{submission_id}/submit", response_model=SubmissionDetail)
+async def submit_submission(submission_id: int, body: SubmitIn, request: Request):
+    """Sales' final gate. Until this runs a submission is a draft: nothing reaches VM
+    and it shows nowhere but the history list. On submit, the lanes sales chose to
+    ask VM about — plus every lane that can't be priced yet because it has a single
+    vendor — become VM tickets. Lanes without a rate that sales did not ask about
+    are marked "Not requested" and go no further."""
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT submitted_at FROM submissions WHERE id = %s AND uploaded_by = %s", (submission_id, email)
+        )
+        srow = await cur.fetchone()
+        if not srow:
+            raise HTTPException(404, "Submission not found")
+        if srow[0] is not None:
+            raise HTTPException(400, "This submission was already submitted")
+
+        await cur.execute(
+            """SELECT id, origin, destination, vehicle_type, target_rate, final_rate, remarks
+               FROM submission_rows WHERE submission_id = %s ORDER BY id""",
+            (submission_id,),
+        )
+        rows = await cur.fetchall()
+        row_ids = {r[0] for r in rows}
+        asked = set(body.ask_vm_row_ids)
+        if not asked <= row_ids:
+            raise HTTPException(400, "Unknown lane in the selection")
+
+        for row_id, origin, destination, vehicle, target, final_rate, remarks in rows:
+            needs_vm = final_rate is None and remarks == pricing.REMARK_PENDING_VM
+            if row_id in asked or needs_vm:
+                await cur.execute(
+                    """INSERT INTO vm_requests
+                       (submission_row_id, origin, destination, vehicle_type, target_rate,
+                        current_final_rate, requested_by)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (row_id, origin, destination, vehicle, target, final_rate, email),
+                )
+            elif final_rate is None:
+                await cur.execute(
+                    "UPDATE submission_rows SET remarks = 'Not requested' WHERE id = %s", (row_id,)
+                )
+        await cur.execute("UPDATE submissions SET submitted_at = NOW() WHERE id = %s", (submission_id,))
+        return await _load_submission_detail(cur, submission_id, email)
+
+
+@app.delete("/api/submissions/{submission_id}", status_code=204)
+async def delete_draft_submission(submission_id: int, request: Request):
+    """Discard a draft (e.g. when sales re-run Check Result). Submitted ones are kept."""
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM submissions WHERE id = %s AND uploaded_by = %s AND submitted_at IS NULL",
+            (submission_id, email),
+        )
+        if not await cur.fetchone():
+            raise HTTPException(404, "Draft not found")
+        await cur.execute("DELETE FROM submission_rows WHERE submission_id = %s", (submission_id,))
+        await cur.execute("DELETE FROM submissions WHERE id = %s", (submission_id,))
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +646,8 @@ VM_REQUEST_SELECT_FROM = """
            vr.submission_row_id, s.shipper_name, s.sales_pic, s.shipper_status,
            s.potential_monthly_revenue, s.commodity_type, s.high_value_fragile, s.id, s.created_at, s.add_ons,
            s.sales_email, sr.min_trip, sr.matched_basis, sr.matched_ranked,
-           vr.single_vendor_approved, vr.override_reason, vr.override_by, vr.auto_closed_sla
+           vr.single_vendor_approved, vr.override_reason, vr.override_by, vr.auto_closed_sla,
+           sr.margin_pct
     FROM vm_requests vr
     LEFT JOIN submission_rows sr ON vr.submission_row_id = sr.id
     LEFT JOIN submissions s ON sr.submission_id = s.id
@@ -610,7 +677,11 @@ def _to_vm_request(r, lane_counts: dict | None = None) -> VmRequest:
         destination=r[2],
         vehicle_type=r[3],
         target_rate=target_rate,
-        target_cost=round(target_rate / 1.111, 2) if target_rate is not None else None,
+        target_cost=(
+            round(target_rate / (1 + (float(r[29]) if r[29] is not None else pricing.MARGIN_PCT_STANDARD) / 100), 2)
+            if target_rate is not None
+            else None
+        ),
         current_final_rate=float(r[5]) if r[5] is not None else None,
         requested_by=r[6],
         status=r[7],
@@ -658,6 +729,15 @@ def _vm_only_fields(r, lane_counts: dict | None) -> dict:
 async def create_vm_request(body: VmRequestIn, request: Request):
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
+        if body.submission_row_id:
+            await cur.execute(
+                """SELECT s.submitted_at FROM submission_rows sr JOIN submissions s ON sr.submission_id = s.id
+                   WHERE sr.id = %s""",
+                (body.submission_row_id,),
+            )
+            owner = await cur.fetchone()
+            if owner and owner[0] is None:
+                raise HTTPException(400, "Submit this request first")
         await cur.execute(
             """INSERT INTO vm_requests
                (submission_row_id, origin, destination, vehicle_type, target_rate,
@@ -765,8 +845,9 @@ async def _store_resolution(cur, request_id: int, row_id: int | None, result) ->
     if row_id:
         await cur.execute(
             """UPDATE submission_rows SET final_rate = %s, remarks = %s, matched_vendor = %s,
-               matched_cost = %s, matched_basis = %s, matched_ranked = %s WHERE id = %s""",
-            (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, basis, ranked_json, row_id),
+               matched_cost = %s, matched_basis = %s, matched_ranked = %s, margin_pct = %s WHERE id = %s""",
+            (result.final_rate, result.remarks, result.matched_vendor, result.matched_cost, basis, ranked_json,
+             result.margin_pct, row_id),
         )
 
 
@@ -1245,7 +1326,7 @@ async def my_lanes(request: Request):
                    WHERE submission_row_id = sr.id AND status IN ('open', 'in_progress')
                    ORDER BY id DESC LIMIT 1
                )
-               WHERE s.uploaded_by = %s
+               WHERE s.uploaded_by = %s AND s.submitted_at IS NOT NULL
                ORDER BY s.id DESC, sr.id ASC""",
             (email,),
         )
@@ -1735,6 +1816,7 @@ class QuotationLine(BaseModel):
     vendor: str | None = None
     cost: float | None = None
     rate: float | None = None
+    margin_pct: float | None = None
 
 
 class OrderLine(BaseModel):
@@ -1779,7 +1861,7 @@ async def _shipper_summaries(cur) -> dict[str, dict]:
                   COUNT(sr.id), COALESCE(SUM(sr.final_rate IS NOT NULL), 0)
            FROM submissions s
            LEFT JOIN submission_rows sr ON sr.submission_id = s.id
-           WHERE s.shipper_name IS NOT NULL AND s.shipper_name <> ''
+           WHERE s.shipper_name IS NOT NULL AND s.shipper_name <> '' AND s.submitted_at IS NOT NULL
            GROUP BY s.shipper_name, s.id, s.sales_email, s.sales_pic, s.created_at
            ORDER BY s.id ASC"""
     )
@@ -1856,9 +1938,10 @@ async def confirm_go_live(body: GoLiveIn, request: Request):
 
         for name in names:
             await cur.execute(
-                """SELECT sr.origin, sr.destination, sr.vehicle_type, sr.matched_vendor, sr.matched_cost, sr.final_rate
+                """SELECT sr.origin, sr.destination, sr.vehicle_type, sr.matched_vendor, sr.matched_cost, sr.final_rate,
+                          sr.margin_pct
                    FROM submission_rows sr JOIN submissions s ON sr.submission_id = s.id
-                   WHERE s.shipper_name = %s AND sr.final_rate IS NOT NULL
+                   WHERE s.shipper_name = %s AND s.submitted_at IS NOT NULL AND sr.final_rate IS NOT NULL
                    ORDER BY s.id ASC, sr.id ASC""",
                 (name,),
             )
@@ -1875,11 +1958,14 @@ async def confirm_go_live(body: GoLiveIn, request: Request):
             for key, r in latest.items():
                 if key in existing:
                     continue
+                margin = r[6]
+                if margin is None and r[4] and r[5]:  # priced before margin_pct was recorded
+                    margin = round((float(r[5]) / float(r[4]) - 1) * 100, 1)
                 await cur.execute(
                     """INSERT INTO tracker_quotation
-                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (name, position, r[0], r[1], r[2], r[3], r[4], r[5]),
+                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate, margin_pct)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (name, position, r[0], r[1], r[2], r[3], r[4], r[5], margin),
                 )
                 position += 1
 
@@ -1950,12 +2036,15 @@ async def tracker_sheet(request: Request, shipper_name: str = Query(...)):
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await _require_live(cur, shipper_name)
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, vendor, cost, rate
+            """SELECT origin, destination, vehicle_type, vendor, cost, rate, margin_pct
                FROM tracker_quotation WHERE shipper_name = %s ORDER BY position, id""",
             (shipper_name,),
         )
         quotation = [
-            QuotationLine(origin=r[0], destination=r[1], vehicle_type=r[2], vendor=r[3], cost=_num(r[4]), rate=_num(r[5]))
+            QuotationLine(
+                origin=r[0], destination=r[1], vehicle_type=r[2], vendor=r[3], cost=_num(r[4]), rate=_num(r[5]),
+                margin_pct=_num(r[6]),
+            )
             for r in await cur.fetchall()
         ]
         await cur.execute(
@@ -1990,10 +2079,10 @@ async def save_tracker_quotation(body: QuotationBody, request: Request, shipper_
             for i, r in enumerate(rows):
                 await cur.execute(
                     """INSERT INTO tracker_quotation
-                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                       (shipper_name, position, origin, destination, vehicle_type, vendor, cost, rate, margin_pct)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (shipper_name, i, r.origin.strip(), r.destination.strip(), r.vehicle_type.strip(),
-                     (r.vendor or "").strip() or None, r.cost, r.rate),
+                     (r.vendor or "").strip() or None, r.cost, r.rate, r.margin_pct),
                 )
             await conn.commit()
         except Exception:
