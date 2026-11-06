@@ -90,46 +90,25 @@ const DEFAULT_SHIPPER_FORM = {
   high_value_fragile: false,
 };
 
-const ADD_ON_RATES = {
-  rdo: { jawa: 7000, luar_jawa: 14000 },
-  overnight: 1000000,
-  additional_drop: 500000,
-};
+// Additional services sales can ask VM to price (sent as one request on Submit).
+const SERVICES = [
+  { key: "overnight", label: "Overnight", unit: "per malam" },
+  { key: "tkbm", label: "TKBM", unit: "per orang" },
+  { key: "additional_drop", label: "Additional Drop Point", unit: "per titik" },
+];
 
-const DEFAULT_ADD_ONS_STATE = {
-  rdo: { checked: false, region: "jawa", qty: "" },
-  overnight: { checked: false },
-  additional_drop: { checked: false, qty: "" },
-  custom: { checked: false, label: "", value: "" },
-};
+const DEFAULT_ADD_ONS_STATE = Object.fromEntries(SERVICES.map((sv) => [sv.key, { checked: false, note: "" }]));
 
 function idr(n) {
   return "Rp" + new Intl.NumberFormat("id-ID").format(n);
 }
 
 function buildAddOns(a) {
-  const out = [];
-  if (a.rdo.checked) {
-    const qty = Number(a.rdo.qty) || 0;
-    const rate = ADD_ON_RATES.rdo[a.rdo.region];
-    const regionLabel = a.rdo.region === "jawa" ? "Jawa" : "Diluar Jawa";
-    out.push({ label: "RDO", value: `${qty} RDO x ${idr(rate)} (${regionLabel}) = ${idr(qty * rate)}` });
-  }
-  if (a.overnight.checked) {
-    out.push({ label: "Overnight", value: idr(ADD_ON_RATES.overnight) });
-  }
-  if (a.additional_drop.checked) {
-    const qty = Number(a.additional_drop.qty) || 0;
-    const rate = ADD_ON_RATES.additional_drop;
-    out.push({
-      label: "Additional Drop Point",
-      value: `${qty} point x ${idr(rate)} (same city) = ${idr(qty * rate)}`,
-    });
-  }
-  if (a.custom.checked && a.custom.label.trim()) {
-    out.push({ label: a.custom.label.trim(), value: a.custom.value || null });
-  }
-  return out;
+  return SERVICES.filter((sv) => a[sv.key].checked).map((sv) => ({
+    label: sv.label,
+    value: a[sv.key].note.trim() || null,
+    service: sv.key,
+  }));
 }
 
 let directoryUsersPromise = null;
@@ -561,6 +540,380 @@ function parseCsvPreview(text) {
     .filter((r) => r.origin && r.destination && r.vehicle_type);
 }
 
+// ---------------------------------------------------------------------------
+// Sales: Quick Check (lane price lookup, nothing saved) + price calculator
+// ---------------------------------------------------------------------------
+
+const CALC_MARGIN = 0.1; // 10% margin on the selling price (not a markup on cost)
+const CALC_PPN = 1.11;
+
+function PriceCalculator() {
+  const [cost, setCost] = useState("");
+  const [withPpn, setWithPpn] = useState(false);
+  const c = Number(String(cost).replace(/[^0-9]/g, "")) || 0;
+  const beforePpn = c / (1 - CALC_MARGIN);
+  const price = withPpn ? beforePpn * CALC_PPN : beforePpn;
+
+  return (
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+      <h2 className="font-semibold mb-1">Kalkulator harga (cost dari procurement)</h2>
+      <p className="text-xs text-ink-400 mb-3">
+        Harga = Cost ÷ (1 − 10%). Margin 10% dari harga jual, bukan mark up dari cost.
+      </p>
+      <div className="flex flex-wrap items-end gap-4">
+        <div>
+          <label className="text-xs text-ink-500">Cost (IDR)</label>
+          <input
+            className="mt-1 w-48 border border-ink-200 rounded px-2 py-1.5 text-sm"
+            placeholder="mis. 3.000.000"
+            value={cost}
+            onChange={(e) => setCost(e.target.value)}
+          />
+        </div>
+        <label className="flex items-center gap-2 text-sm pb-2">
+          <input type="checkbox" checked={withPpn} onChange={(e) => setWithPpn(e.target.checked)} />
+          Include PPN 11%
+        </label>
+      </div>
+      {c > 0 && (
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="rounded-lg border-2 border-brand-500 bg-brand-50 p-3">
+            <div className="text-xs text-ink-500">Harga jual{withPpn ? " (incl. PPN 11%)" : ""}</div>
+            <div className="text-xl font-bold text-brand-700">{idr(Math.round(price))}</div>
+          </div>
+          <div className="rounded-lg border border-ink-100 p-3">
+            <div className="text-xs text-ink-500">Keuntungan</div>
+            <div className="text-lg font-semibold">{idr(Math.round(beforePpn - c))}</div>
+          </div>
+          <div className="rounded-lg border border-ink-100 p-3">
+            <div className="text-xs text-ink-500">Margin</div>
+            <div className="text-lg font-semibold">10%</div>
+          </div>
+          <p className="col-span-3 text-sm rounded border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2">
+            Harga ini sudah batas bawah. Kalau mau di bawah harga ini, harus tanya ke PSP dulu.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuickCheck({ onRequest }) {
+  const [origin, setOrigin] = useState("");
+  const [destination, setDestination] = useState("");
+  const [vehicleChoice, setVehicleChoice] = useState("");
+  const [vehicleOther, setVehicleOther] = useState("");
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const vehicle = (vehicleChoice === "__other__" ? vehicleOther : vehicleChoice).trim();
+  const bad = (v) => v.trim() !== "" && !canonicalL2(v);
+
+  const search = async () => {
+    const o = canonicalL2(origin);
+    const d = canonicalL2(destination);
+    if (!o || !d || !vehicle) {
+      setError("Pilih Origin, Destinasi (dari list L2) dan tipe kendaraan");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const q = new URLSearchParams({ origin: o, destination: d, vehicle_type: vehicle });
+      const res = await fetch(`/api/quick-check?${q}`);
+      if (!res.ok) throw new Error("Gagal mengecek harga");
+      setResult(await res.json());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const RANK_LABEL = ["1st winner", "2nd winner", "3rd winner"];
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+        <h2 className="font-semibold mb-1">Quick Check harga lane</h2>
+        <p className="text-xs text-ink-400 mb-3">Cek cepat dari rate card — tidak menyimpan apa pun dan tidak membuat tiket.</p>
+        <datalist id="l2-locations-quick">
+          {L2_LOCATIONS.map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
+        <div className="flex flex-wrap gap-2 items-start">
+          {[
+            [origin, setOrigin, "L2 Origin"],
+            [destination, setDestination, "L2 Destinasi"],
+          ].map(([v, set, ph]) => (
+            <input
+              key={ph}
+              list="l2-locations-quick"
+              placeholder={ph}
+              className={`flex-1 min-w-[200px] border rounded px-2 py-1.5 text-sm ${
+                bad(v) ? "border-red-400 bg-red-50" : "border-ink-200"
+              }`}
+              value={v}
+              onChange={(e) => {
+                set(e.target.value);
+                setResult(null);
+              }}
+              onBlur={(e) => {
+                const c = canonicalL2(e.target.value);
+                if (c) set(c);
+              }}
+            />
+          ))}
+          <div className="w-44 flex flex-col gap-1">
+            <select
+              className="border border-ink-200 rounded px-2 py-1.5 text-sm bg-white"
+              value={vehicleChoice}
+              onChange={(e) => {
+                setVehicleChoice(e.target.value);
+                setResult(null);
+              }}
+            >
+              <option value="">Vehicle type…</option>
+              {VEHICLE_TYPES.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+              <option value="__other__">Others…</option>
+            </select>
+            {vehicleChoice === "__other__" && (
+              <input
+                placeholder="Type the vehicle"
+                className="border border-ink-200 rounded px-2 py-1.5 text-sm"
+                value={vehicleOther}
+                onChange={(e) => setVehicleOther(e.target.value)}
+              />
+            )}
+          </div>
+          <button
+            onClick={search}
+            disabled={loading}
+            className="px-4 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {loading ? "Mencari…" : "Cek harga"}
+          </button>
+        </div>
+        {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+
+        {result &&
+          (result.available ? (
+            <div className="mt-4">
+              <div className="grid grid-cols-3 gap-3">
+                {result.winners.map((w) => {
+                  const used = w.rank === 2;
+                  return (
+                    <div
+                      key={w.rank}
+                      className={`rounded-lg p-3 ${used ? "border-2 border-brand-500 bg-brand-50" : "border border-ink-100"}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold uppercase text-ink-500">{RANK_LABEL[w.rank - 1]}</span>
+                        {used && (
+                          <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-brand-600 text-white">
+                            Rate yang dipakai
+                          </span>
+                        )}
+                      </div>
+                      <div className={`mt-1 font-bold ${used ? "text-2xl text-brand-700" : "text-lg"}`}>{idr(Math.round(w.price))}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-ink-500 mt-2">
+                Final rate memakai 2nd winner (vendor termurah ke-2) + margin 11,1% (termasuk PPN). Semua angka sudah harga
+                jual.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 flex items-center justify-between gap-3">
+              <span>
+                Rate belum tersedia untuk lane ini
+                {result.vendor_count === 1 ? " (baru ada 1 vendor)" : ""}. Ajukan request ke VM.
+              </span>
+              <button
+                onClick={() => onRequest({ origin: result.origin, destination: result.destination, vehicle_type: result.vehicle_type })}
+                className="px-3 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 whitespace-nowrap"
+              >
+                Buat request ke VM
+              </button>
+            </div>
+          ))}
+      </div>
+
+      <PriceCalculator />
+    </div>
+  );
+}
+
+// Additional-service price requests (Overnight / TKBM / Drop point), one card per submission.
+function serviceAnswerText(it) {
+  if (it.unavailable) return it.auto_closed_sla ? "Tidak tersedia (auto-closed SLA)" : "Tidak tersedia";
+  if (it.unit_price != null) return `${idr(it.unit_price)} ${it.unit}`;
+  return "Menunggu VM";
+}
+
+function ServiceRequestCards({ requests }) {
+  if (requests.length === 0) return null;
+  return (
+    <div className="space-y-2 mb-4">
+      <h3 className="text-sm font-semibold text-ink-500 uppercase">Additional services</h3>
+      {requests.map((r) => (
+        <div key={r.submission_id} className="bg-white rounded-xl border border-ink-100 shadow-sm p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-medium text-sm">{r.shipper_name || `Submission #${r.submission_id}`}</span>
+            <span className="text-xs text-ink-400">
+              {r.created_at} · {r.aging_days}d
+            </span>
+          </div>
+          <table className="w-full">
+            <tbody>
+              {r.items.map((it) => (
+                <tr key={it.id}>
+                  <Td className="w-48 font-medium">{it.label}</Td>
+                  <Td className="text-ink-500">{it.note || "-"}</Td>
+                  <Td className={it.unit_price != null ? "font-medium text-right" : "text-ink-400 text-right"}>
+                    {serviceAnswerText(it)}
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// VM: answer additional-service price requests.
+function VmServiceRequests({ requests, onSaved }) {
+  const [drafts, setDrafts] = useState({});
+  const [savingId, setSavingId] = useState(null);
+  const [error, setError] = useState(null);
+
+  const draftOf = (it) =>
+    drafts[it.id] || { price: it.unit_price != null ? String(it.unit_price) : "", unavailable: it.unavailable };
+  const setDraft = (it, patch) => setDrafts((d) => ({ ...d, [it.id]: { ...draftOf(it), ...patch } }));
+
+  const save = async (r) => {
+    setSavingId(r.submission_id);
+    setError(null);
+    try {
+      const items = r.items.map((it) => {
+        const d = draftOf(it);
+        const digits = String(d.price).replace(/[^0-9.]/g, "");
+        return { id: it.id, unavailable: d.unavailable, unit_price: d.unavailable || digits === "" ? null : Number(digits) };
+      });
+      const res = await fetch(`/api/vm/service-requests/${r.submission_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Save failed");
+      }
+      setDrafts((d) => Object.fromEntries(Object.entries(d).filter(([id]) => !r.items.some((it) => String(it.id) === id))));
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  if (requests.length === 0) return <p className="text-sm text-ink-400">No additional-service requests.</p>;
+
+  return (
+    <div className="space-y-3">
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {requests.map((r) => (
+        <div key={r.submission_id} className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <span className="font-semibold">{r.shipper_name || `Submission #${r.submission_id}`}</span>
+              <span className="ml-2 text-xs text-ink-400">
+                {r.sales_pic || r.requested_by} · {r.created_at} · {r.aging_days}d
+              </span>
+            </div>
+            <span
+              className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
+                r.status === "done" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+              }`}
+            >
+              {r.status === "done" ? "Done" : "Open"}
+            </span>
+          </div>
+
+          {r.lanes.length > 0 && (
+            <div className="mb-3 text-xs text-ink-500">
+              <p className="font-medium mb-1">Winning vendor per lane:</p>
+              <ul className="space-y-0.5">
+                {r.lanes.map((l, i) => (
+                  <li key={i}>
+                    {l.origin} → {l.destination} ({l.vehicle_type}): <span className="font-medium text-ink-700">{l.vendor || "-"}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <table className="w-full">
+            <thead>
+              <tr>
+                <Th>Service</Th>
+                <Th>Sales notes</Th>
+                <Th>Price per unit (IDR)</Th>
+                <Th>Tidak tersedia</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.items.map((it) => {
+                const d = draftOf(it);
+                return (
+                  <tr key={it.id}>
+                    <Td className="font-medium">{it.label}</Td>
+                    <Td className="text-ink-500">{it.note || "-"}</Td>
+                    <Td>
+                      <div className="flex items-center gap-2">
+                        <input
+                          className="w-36 border border-ink-200 rounded px-2 py-1 text-sm disabled:bg-ink-50"
+                          disabled={d.unavailable}
+                          value={d.unavailable ? "" : d.price}
+                          onChange={(e) => setDraft(it, { price: e.target.value })}
+                        />
+                        <span className="text-xs text-ink-400">{it.unit}</span>
+                      </div>
+                    </Td>
+                    <Td>
+                      <input type="checkbox" checked={d.unavailable} onChange={(e) => setDraft(it, { unavailable: e.target.checked })} />
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div className="flex justify-end mt-2">
+            <button
+              onClick={() => save(r)}
+              disabled={savingId === r.submission_id}
+              className="px-4 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+            >
+              {savingId === r.submission_id ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [mainTab, setMainTab] = useState("new");
   const [submissions, setSubmissions] = useState([]);
@@ -568,9 +921,9 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
   const [lanes, setLanes] = useState([]);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState(null);
-  const [requested, setRequested] = useState({});
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [bulkRequesting, setBulkRequesting] = useState(false);
+  const [askIds, setAskIds] = useState(new Set()); // draft lanes sales marked "Ask VM"
+  const [confirmingSubmit, setConfirmingSubmit] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [discussionEndpoint, setDiscussionEndpoint] = useState(null);
 
   const salesUsers = useDirectoryUsers().filter((u) => u.role === "sales");
@@ -607,8 +960,25 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setPreviewRows([]);
     setUploadMode("csv");
     setManualRows([{ origin: "", destination: "", vehicle_type: "", vehicle_choice: "", target_rate: "", min_trip: "" }]);
-    setSelectedIds(new Set());
+    setAskIds(new Set());
     setError(null);
+  };
+
+  // Lane pre-filled from Quick Check when its rate isn't available.
+  const startNewWithLane = (lane) => {
+    startNew();
+    setUploadMode("manual");
+    const known = VEHICLE_TYPES.includes(lane.vehicle_type);
+    setManualRows([
+      {
+        origin: lane.origin,
+        destination: lane.destination,
+        vehicle_choice: known ? lane.vehicle_type : "__other__",
+        vehicle_type: known ? "" : lane.vehicle_type,
+        target_rate: "",
+        min_trip: "",
+      },
+    ]);
   };
 
   const updateManualRow = (i, field, value) => {
@@ -646,7 +1016,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     const f = e.target.files[0];
     if (!f) return;
     setActive(null);
-    setSelectedIds(new Set());
+    setAskIds(new Set());
     setFile(f);
     setError(null);
     const reader = new FileReader();
@@ -674,6 +1044,10 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     setChecking(true);
     setError(null);
     try {
+      // Re-running Check Result replaces the unsubmitted draft instead of piling up drafts.
+      if (active && !active.submission.submitted_at) {
+        await fetch(`/api/submissions/${active.submission.id}`, { method: "DELETE" });
+      }
       const selectedAddOns = buildAddOns(addOnsState);
 
       const form = new FormData();
@@ -695,8 +1069,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       }
       const data = await res.json();
       setActive(data);
-      setRequested(Object.fromEntries(data.rows.filter((r) => r.raised_to_vm).map((r) => [r.id, true])));
-      setSelectedIds(new Set());
+      setAskIds(new Set());
       loadSubmissions();
       loadLanes();
     } catch (err) {
@@ -712,69 +1085,75 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       .then((r) => r.json())
       .then((d) => {
         setActive(d);
-        setRequested(Object.fromEntries(d.rows.filter((r) => r.raised_to_vm).map((r) => [r.id, true])));
-        setSelectedIds(new Set());
+        setAskIds(new Set());
         setFile(null);
         setPreviewRows([]);
       });
   };
 
-  const requestVm = async (row) => {
-    await fetch("/api/vm-requests", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        submission_row_id: row.id,
-        origin: row.origin,
-        destination: row.destination,
-        vehicle_type: row.vehicle_type,
-        target_rate: row.target_rate,
-        current_final_rate: row.final_rate,
-      }),
-    });
-    setRequested((r) => ({ ...r, [row.id]: true }));
-    loadLanes();
-  };
+  const isDraft = active && !active.submission.submitted_at;
+  const askable = (row) => !row.needs_vm; // single-vendor lanes are always sent on Submit
+  const askableRows = isDraft ? active.rows.filter(askable) : [];
+  const allAsked = askableRows.length > 0 && askableRows.every((r) => askIds.has(r.id));
 
-  const toggleRow = (id) => {
-    setSelectedIds((prev) => {
+  const toggleAsk = (id) => {
+    setAskIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
   };
+  const toggleAskAll = () => setAskIds(allAsked ? new Set() : new Set(askableRows.map((r) => r.id)));
 
-  const selectableRows = active ? active.rows.filter((r) => !requested[r.id]) : [];
-  const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selectedIds.has(r.id));
+  const draftRows = isDraft ? active.rows : [];
+  const notAskedNoRate = draftRows.filter((r) => askable(r) && r.final_rate == null && !askIds.has(r.id));
+  const notAskedWithRate = draftRows.filter((r) => askable(r) && r.final_rate != null && !askIds.has(r.id));
+  const autoSent = draftRows.filter((r) => r.needs_vm);
+  const draftServices = isDraft ? active.submission.add_ons.filter((a) => a.service) : [];
 
-  const toggleSelectAll = () => {
-    if (allSelected) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(selectableRows.map((r) => r.id)));
-    }
-  };
-
-  const raiseSelected = async () => {
-    if (selectedIds.size === 0) return;
-    setBulkRequesting(true);
+  const submit = async () => {
+    setSubmitting(true);
+    setError(null);
     try {
-      const rows = active.rows.filter((r) => selectedIds.has(r.id));
-      for (const row of rows) {
-        await requestVm(row);
+      const res = await fetch(`/api/submissions/${active.submission.id}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ask_vm_row_ids: [...askIds] }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || "Submit failed");
       }
-      setSelectedIds(new Set());
+      setActive(await res.json());
+      setAskIds(new Set());
+      setConfirmingSubmit(false);
+      loadSubmissions();
       loadLanes();
+      loadServiceRequests();
+    } catch (err) {
+      setError(err.message);
+      setConfirmingSubmit(false);
     } finally {
-      setBulkRequesting(false);
+      setSubmitting(false);
     }
   };
+
+  const [serviceRequests, setServiceRequests] = useState([]);
+  const loadServiceRequests = () => {
+    fetch("/api/service-requests")
+      .then((r) => (r.ok ? r.json() : { requests: [] }))
+      .then((d) => setServiceRequests(d.requests));
+  };
+  useEffect(loadServiceRequests, []);
 
   const activeLanes = lanes.filter((l) => l.vm_status === "open" || l.vm_status === "in_progress");
   const completedLanes = lanes.filter(
     (l) => !(l.vm_status === "open" || l.vm_status === "in_progress") && (l.final_rate != null || (l.remarks || "").startsWith("No vendor available"))
   );
+
+  const openServices = serviceRequests.filter((r) => r.status === "open");
+  const doneServices = serviceRequests.filter((r) => r.status === "done");
 
   useEffect(() => {
     if (!focusSubmissionId) return;
@@ -786,9 +1165,10 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
     <div>
       <div className="flex gap-2 mb-6">
         {[
+          { key: "quick", label: "Quick Check" },
           { key: "new", label: "New Request" },
-          { key: "active", label: `Active Request (${activeLanes.length})` },
-          { key: "completed", label: `Completed Request (${completedLanes.length})` },
+          { key: "active", label: `Active Request (${activeLanes.length + openServices.length})` },
+          { key: "completed", label: `Completed Request (${completedLanes.length + doneServices.length})` },
         ].map((t) => (
           <button
             key={t.key}
@@ -805,6 +1185,7 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
       {(mainTab === "active" || mainTab === "completed") && (
         <div className="flex gap-5 items-start">
           <div className="flex-1 min-w-0">
+            <ServiceRequestCards requests={mainTab === "active" ? openServices : doneServices} />
             {mainTab === "active" ? (
               <GlobalLanesList
                 lanes={activeLanes}
@@ -842,6 +1223,8 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
         </div>
       )}
 
+      {mainTab === "quick" && <QuickCheck onRequest={startNewWithLane} />}
+
       {mainTab === "new" && (
         <div className="flex gap-6">
           <div className="w-64 shrink-0">
@@ -859,7 +1242,14 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                     onClick={() => openSubmission(s.id)}
                     className="text-sm text-left w-full px-2 py-1.5 rounded hover:bg-ink-100"
                   >
-                    <div className="truncate">{s.shipper_name || s.filename || `Submission #${s.id}`}</div>
+                    <div className="truncate">
+                      {!s.submitted_at && (
+                        <span className="mr-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-bold uppercase">
+                          Draft
+                        </span>
+                      )}
+                      {s.shipper_name || s.filename || `Submission #${s.id}`}
+                    </div>
                     <div className="text-xs text-ink-400">{s.created_at}</div>
                   </button>
                 </li>
@@ -942,136 +1332,36 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
               <div>
                 <h2 className="font-semibold mb-3">Additional services</h2>
                 <p className="text-xs text-ink-400 mb-3">
-                  Recorded with the submission — included in the downloaded quotation and shown on the ticket.
-                  Doesn't change the computed Final Rate.
+                  Tick the services you need priced. On Submit they go to VM as one request for this shipper; VM answers the
+                  price per unit and it shows in Completed Request and the quotation.
                 </p>
                 <div className="space-y-3">
-                  <div>
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={addOnsState.rdo.checked}
-                        onChange={(e) =>
-                          setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, checked: e.target.checked } }))
-                        }
-                      />
-                      RDO (Rp7,000/RDO Jawa, Rp14,000/RDO Diluar Jawa)
-                    </label>
-                    {addOnsState.rdo.checked && (
-                      <div className="flex gap-3 pl-6 mt-1">
-                        <select
-                          className="border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.rdo.region}
-                          onChange={(e) =>
-                            setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, region: e.target.value } }))
-                          }
-                        >
-                          <option value="jawa">Jawa</option>
-                          <option value="luar_jawa">Diluar Jawa</option>
-                        </select>
+                  {SERVICES.map((sv) => (
+                    <div key={sv.key}>
+                      <label className="flex items-center gap-2 text-sm font-medium">
                         <input
-                          type="number"
-                          min="0"
-                          placeholder="Qty RDO"
-                          className="w-32 border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.rdo.qty}
-                          onChange={(e) => setAddOnsState((a) => ({ ...a, rdo: { ...a.rdo, qty: e.target.value } }))}
-                        />
-                        {addOnsState.rdo.qty && (
-                          <span className="text-xs text-ink-400 self-center">
-                            = {idr((Number(addOnsState.rdo.qty) || 0) * ADD_ON_RATES.rdo[addOnsState.rdo.region])}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={addOnsState.overnight.checked}
-                        onChange={(e) =>
-                          setAddOnsState((a) => ({ ...a, overnight: { checked: e.target.checked } }))
-                        }
-                      />
-                      Overnight ({idr(ADD_ON_RATES.overnight)})
-                    </label>
-                  </div>
-
-                  <div>
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={addOnsState.additional_drop.checked}
-                        onChange={(e) =>
-                          setAddOnsState((a) => ({
-                            ...a,
-                            additional_drop: { ...a.additional_drop, checked: e.target.checked },
-                          }))
-                        }
-                      />
-                      Additional Drop Point (Rp500,000 per point, same city)
-                    </label>
-                    {addOnsState.additional_drop.checked && (
-                      <div className="flex gap-3 pl-6 mt-1">
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="Qty drop point"
-                          className="w-36 border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.additional_drop.qty}
+                          type="checkbox"
+                          checked={addOnsState[sv.key].checked}
                           onChange={(e) =>
-                            setAddOnsState((a) => ({
-                              ...a,
-                              additional_drop: { ...a.additional_drop, qty: e.target.value },
-                            }))
+                            setAddOnsState((a) => ({ ...a, [sv.key]: { ...a[sv.key], checked: e.target.checked } }))
                           }
                         />
-                        {addOnsState.additional_drop.qty && (
-                          <span className="text-xs text-ink-400 self-center">
-                            ={" "}
-                            {idr(
-                              (Number(addOnsState.additional_drop.qty) || 0) * ADD_ON_RATES.additional_drop
-                            )}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="flex items-center gap-2 text-sm font-medium">
-                      <input
-                        type="checkbox"
-                        checked={addOnsState.custom.checked}
-                        onChange={(e) =>
-                          setAddOnsState((a) => ({ ...a, custom: { ...a.custom, checked: e.target.checked } }))
-                        }
-                      />
-                      Custom
-                    </label>
-                    {addOnsState.custom.checked && (
-                      <div className="flex gap-3 pl-6 mt-1">
-                        <input
-                          placeholder="Label"
-                          className="border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.custom.label}
-                          onChange={(e) =>
-                            setAddOnsState((a) => ({ ...a, custom: { ...a.custom, label: e.target.value } }))
-                          }
-                        />
-                        <input
-                          placeholder="Value / notes (optional)"
-                          className="border border-ink-200 rounded px-2 py-1 text-sm"
-                          value={addOnsState.custom.value}
-                          onChange={(e) =>
-                            setAddOnsState((a) => ({ ...a, custom: { ...a.custom, value: e.target.value } }))
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
+                        {sv.label} <span className="text-xs font-normal text-ink-400">({sv.unit})</span>
+                      </label>
+                      {addOnsState[sv.key].checked && (
+                        <div className="pl-6 mt-1">
+                          <input
+                            placeholder="Notes for VM (optional)"
+                            className="w-full max-w-lg border border-ink-200 rounded px-2 py-1 text-sm"
+                            value={addOnsState[sv.key].note}
+                            onChange={(e) =>
+                              setAddOnsState((a) => ({ ...a, [sv.key]: { ...a[sv.key], note: e.target.value } }))
+                            }
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -1249,36 +1539,52 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-3">
-                    {selectedIds.size > 0 && (
+                    {isDraft ? (
+                      <>
+                        <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-700 text-xs font-bold uppercase">Draft</span>
+                        <span className="text-xs text-ink-500">
+                          Nothing is sent until you Submit. Mark the lanes VM should look at, then Submit.
+                        </span>
+                      </>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded bg-green-100 text-green-700 text-xs font-bold uppercase">
+                        Submitted {active.submission.submitted_at}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
+                      className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50"
+                    >
+                      Download quotation (Excel)
+                    </a>
+                    {isDraft && (
                       <button
-                        onClick={raiseSelected}
-                        disabled={bulkRequesting}
-                        className="text-sm px-3 py-1.5 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                        onClick={() => setConfirmingSubmit(true)}
+                        className="text-sm px-4 py-1.5 rounded font-medium bg-brand-600 text-white hover:bg-brand-700"
                       >
-                        {bulkRequesting ? "Raising…" : `Raise ${selectedIds.size} selected to VM`}
+                        Submit
                       </button>
                     )}
                   </div>
-                  <a
-                    href={`/api/submissions/${active.submission.id}/quotation.xlsx`}
-                    className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50"
-                  >
-                    Download quotation (Excel)
-                  </a>
                 </div>
 
                 <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
                   <table className="w-full">
                     <thead>
                       <tr>
-                        <Th>
-                          <input
-                            type="checkbox"
-                            checked={allSelected}
-                            onChange={toggleSelectAll}
-                            disabled={selectableRows.length === 0}
-                          />
-                        </Th>
+                        {isDraft && (
+                          <Th>
+                            <input
+                              type="checkbox"
+                              title="Ask VM for every lane"
+                              checked={allAsked}
+                              onChange={toggleAskAll}
+                              disabled={askableRows.length === 0}
+                            />
+                          </Th>
+                        )}
                         <Th>Origin</Th>
                         <Th>Destination</Th>
                         <Th>Vehicle Type</Th>
@@ -1290,16 +1596,14 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                     </thead>
                     <tbody>
                       {active.rows.map((row) => (
-                        <tr key={row.id}>
-                          <Td>
-                            {!requested[row.id] && (
-                              <input
-                                type="checkbox"
-                                checked={selectedIds.has(row.id)}
-                                onChange={() => toggleRow(row.id)}
-                              />
-                            )}
-                          </Td>
+                        <tr key={row.id} className={askIds.has(row.id) ? "bg-brand-50" : ""}>
+                          {isDraft && (
+                            <Td>
+                              {askable(row) && (
+                                <input type="checkbox" checked={askIds.has(row.id)} onChange={() => toggleAsk(row.id)} />
+                              )}
+                            </Td>
+                          )}
                           <Td>{row.origin}</Td>
                           <Td>{row.destination}</Td>
                           <Td>{row.vehicle_type}</Td>
@@ -1309,14 +1613,24 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                           </Td>
                           <Td className="text-ink-500">{row.remarks}</Td>
                           <Td>
-                            {requested[row.id] ? (
-                              <span className="text-xs text-green-600">Requested</span>
+                            {!isDraft ? (
+                              row.raised_to_vm && <span className="text-xs text-green-600">Requested</span>
+                            ) : !askable(row) ? (
+                              <span className="text-xs text-ink-500 whitespace-nowrap">Sent to VM on Submit</span>
                             ) : (
                               <button
-                                onClick={() => requestVm(row)}
-                                className="text-xs px-2 py-1 rounded border border-ink-200 hover:bg-ink-50 whitespace-nowrap"
+                                onClick={() => toggleAsk(row.id)}
+                                className={`text-xs px-2 py-1 rounded border whitespace-nowrap ${
+                                  askIds.has(row.id)
+                                    ? "border-brand-600 bg-brand-600 text-white"
+                                    : "border-ink-200 hover:bg-ink-50"
+                                }`}
                               >
-                                {row.final_rate == null ? "Ask VM for rates" : "Ask VM for a lower rate"}
+                                {askIds.has(row.id)
+                                  ? "✓ Will ask VM"
+                                  : row.final_rate == null
+                                  ? "Ask VM for rates"
+                                  : "Ask VM for a lower rate"}
                               </button>
                             )}
                           </Td>
@@ -1324,6 +1638,68 @@ function SalesView({ focusSubmissionId, onFocusHandled }) {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {confirmingSubmit && (
+              <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+                <div className="bg-white rounded-xl shadow-xl max-w-lg w-full p-5 space-y-3 max-h-[85vh] overflow-y-auto">
+                  <h3 className="font-semibold text-lg">Confirm submission?</h3>
+                  <p className="text-sm text-ink-600">
+                    {askIds.size + autoSent.length} lane(s) will be sent to VM
+                    {draftServices.length > 0 && `, plus a price request for ${draftServices.map((a) => a.label).join(", ")}`}.
+                  </p>
+                  {notAskedNoRate.length > 0 && (
+                    <div className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      <p className="font-medium mb-1">
+                        {notAskedNoRate.length} lane(s) have no rate and weren't asked to VM — they won't be processed and
+                        won't show in Active Request:
+                      </p>
+                      <ul className="list-disc pl-5 text-xs">
+                        {notAskedNoRate.map((r) => (
+                          <li key={r.id}>
+                            {r.origin} → {r.destination} ({r.vehicle_type})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {notAskedWithRate.length > 0 && (
+                    <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                      <p className="font-medium mb-1">
+                        {notAskedWithRate.length} lane(s) weren't asked for a lower rate — they will use the rate shown, and
+                        VM won't look for a cheaper one:
+                      </p>
+                      <ul className="list-disc pl-5 text-xs">
+                        {notAskedWithRate.map((r) => (
+                          <li key={r.id}>
+                            {r.origin} → {r.destination} ({r.vehicle_type}): {fmt(r.final_rate)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {autoSent.length > 0 && (
+                    <p className="text-xs text-ink-500">
+                      {autoSent.length} lane(s) with only one vendor are always sent to VM for review.
+                    </p>
+                  )}
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      onClick={() => setConfirmingSubmit(false)}
+                      className="px-3 py-1.5 rounded text-sm border border-ink-200 hover:bg-ink-50"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={submit}
+                      disabled={submitting}
+                      className="px-4 py-1.5 rounded text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                    >
+                      {submitting ? "Submitting…" : "Confirm submit"}
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -2185,6 +2561,11 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
 
   const loadSummary = () => fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
   const loadRequests = () => fetch("/api/vm/requests").then((r) => r.json()).then((d) => setRequests(d.requests));
+  const [serviceRequests, setServiceRequests] = useState([]);
+  const loadServiceRequests = () =>
+    fetch("/api/vm/service-requests")
+      .then((r) => (r.ok ? r.json() : { requests: [] }))
+      .then((d) => setServiceRequests(d.requests));
   const loadViews = () =>
     fetch("/api/ticket-views")
       .then((r) => r.json())
@@ -2193,6 +2574,7 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
   useEffect(() => {
     loadSummary();
     loadRequests();
+    loadServiceRequests();
     loadViews();
   }, []);
 
@@ -2236,6 +2618,10 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
           { key: "summary", label: "Prioritization" },
           { key: "active", label: "Active Request" },
           { key: "completed", label: "Completed Request" },
+          {
+            key: "services",
+            label: `Additional Services (${serviceRequests.filter((r) => r.status === "open").length} open)`,
+          },
         ].map((t) => (
           <button
             key={t.key}
@@ -2248,6 +2634,18 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
           </button>
         ))}
       </div>
+
+      {tab === "services" && (
+        <div className="space-y-6">
+          <VmServiceRequests requests={serviceRequests.filter((r) => r.status === "open")} onSaved={loadServiceRequests} />
+          {serviceRequests.some((r) => r.status === "done") && (
+            <div>
+              <h3 className="text-sm font-semibold text-ink-500 uppercase mb-2">Done</h3>
+              <VmServiceRequests requests={serviceRequests.filter((r) => r.status === "done")} onSaved={loadServiceRequests} />
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === "summary" && summary && (
         prioritizationView ? (
@@ -2357,7 +2755,6 @@ function VmView({ focusSubmissionId, onFocusHandled }) {
 // Profitability: pick shippers to go live, then a per-shipper tracker "spreadsheet"
 // ---------------------------------------------------------------------------
 
-const PPN_FACTOR = 1.1;
 const ORDER_STATUS_OPTIONS = [
   { value: "", label: "-" },
   { value: "completed", label: "Completed" },
@@ -2369,10 +2766,11 @@ const toNum = (v) => {
   const n = Number(v);
   return Number.isNaN(n) ? null : n;
 };
+// Actual margin over cost: (rate − cost) ÷ cost.
 const marginPct = (rate, cost) => {
   const r = toNum(rate);
   const c = toNum(cost);
-  return r && c !== null ? ((r - c) / r) * 100 : null;
+  return r !== null && c ? ((r - c) / c) * 100 : null;
 };
 const fmtPct = (v) => (v === null ? "-" : `${v.toFixed(1)}%`);
 const laneKeyFe = (o, d, v) =>
@@ -2516,14 +2914,14 @@ function EditableGrid({ columns, rows, setRows, blankRow, onCellEdited, rowError
   );
 }
 
-const blankQuotationRow = () => ({ origin: "", destination: "", vehicle_type: "", vendor: "", cost: "", rate: "" });
+const blankQuotationRow = () => ({ origin: "", destination: "", vehicle_type: "", vendor: "", cost: "", rate: "", margin_pct: "" });
 const blankOrderRow = () => ({
   order_no: "", order_date: "", origin: "", destination: "", vehicle_type: "", status: "",
   planned_vendor: "", est_cost: "", rate: "", actual_vendor: "", actual_invoice_cost: "",
   revenue_uang_jalan: "", revenue_overnight: "",
 });
 
-const NUMERIC_QUOTATION = ["cost", "rate"];
+const NUMERIC_QUOTATION = ["cost", "rate", "margin_pct"];
 const NUMERIC_ORDER = ["est_cost", "rate", "actual_invoice_cost", "revenue_uang_jalan", "revenue_overnight"];
 
 function TrackerSheetView({ shipperName, canUndo, onBack, onUndone }) {
@@ -2582,7 +2980,7 @@ function TrackerSheetView({ shipperName, canUndo, onBack, onUndone }) {
     { key: "vendor", label: "Vendor", type: "text" },
     { key: "cost", label: "Cost", type: "number" },
     { key: "rate", label: "Rate", type: "number" },
-    { key: "margin", label: "Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.cost)) },
+    { key: "margin_pct", label: "Margin % (policy)", type: "number" },
   ];
   const orderColumns = [
     { key: "order_no", label: "Order No.", type: "text" },
@@ -2600,13 +2998,17 @@ function TrackerSheetView({ shipperName, canUndo, onBack, onUndone }) {
     { key: "revenue_overnight", label: "Revenue (Overnight)", type: "number" },
     {
       key: "total_revenue",
-      label: "Total Revenue (incl. PPN)",
+      label: "Total Revenue",
       computed: (r) =>
         toNum(r.rate) === null
           ? "-"
-          : fmt(Math.round((toNum(r.rate) + (toNum(r.revenue_uang_jalan) || 0) + (toNum(r.revenue_overnight) || 0)) * PPN_FACTOR)),
+          : fmt(Math.round(toNum(r.rate) + (toNum(r.revenue_uang_jalan) || 0) + (toNum(r.revenue_overnight) || 0))),
     },
-    { key: "est_margin", label: "Est. Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.est_cost)) },
+    {
+      key: "est_margin",
+      label: "Est. Margin %",
+      computed: (r) => fmtPct(toNum(quotationMap[laneKeyFe(r.origin, r.destination, r.vehicle_type)]?.margin_pct)),
+    },
     { key: "actual_margin", label: "Actual Margin %", computed: (r) => fmtPct(marginPct(r.rate, r.actual_invoice_cost)) },
   ];
 
@@ -2702,7 +3104,8 @@ function TrackerSheetView({ shipperName, canUndo, onBack, onUndone }) {
         <div>
           <p className="text-xs text-ink-500 mb-2">
             Type origin, destination and vehicle: when the lane is in Quotation Cost, vendor, estimated cost and rate fill in
-            automatically. Margin % = (rate − cost) ÷ rate. Total revenue = (rate + uang jalan + overnight) × 1.1 (PPN).
+            automatically. Est. margin = the lane's policy margin in Quotation Cost (11.1% or 6.1%, incl. PPN). Actual margin =
+            (rate − actual invoice cost) ÷ actual invoice cost. Total revenue = rate + uang jalan + overnight (no PPN added).
           </p>
           <EditableGrid
             columns={orderColumns}
@@ -3228,7 +3631,7 @@ function AppInner() {
         <div className="bg-black/25 backdrop-blur-sm relative z-10">
           <div className="max-w-6xl mx-auto px-6 py-2 flex items-center justify-between">
             <div className="flex gap-1">
-              {(isSuperadmin ? ["sales", "vm", "admin", "profitability"] : [me.role, "profitability"]).map((v) => (
+              {(isSuperadmin ? ["sales", "vm", "profitability"] : [me.role, "profitability"]).map((v) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -3240,8 +3643,18 @@ function AppInner() {
                 </button>
               ))}
             </div>
-            <div className="text-xs text-white/85">
-              {me.email}
+            <div className="flex items-center gap-3 text-xs text-white/85">
+              {isSuperadmin && (
+                <button
+                  onClick={() => setView("admin")}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide transition ${
+                    activeView === "admin" ? "bg-white text-brand-700 shadow" : "text-white/85 hover:bg-white/15"
+                  }`}
+                >
+                  {VIEW_LABEL.admin}
+                </button>
+              )}
+              <span>{me.email}</span>
               <span className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold uppercase">{me.role}</span>
             </div>
           </div>

@@ -72,6 +72,19 @@
         "summary": "Sales: fetch one submission and its computed rows.",
         "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}} }
+      },
+      "delete": {
+        "summary": "Sales: discard a draft (not yet submitted) submission, e.g. when Check Result is re-run.",
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "responses": { "204": {"description": "No Content"}, "404": {"description": "Draft not found"} }
+      }
+    },
+    "/api/submissions/{submission_id}/submit": {
+      "post": {
+        "summary": "Sales: submit a draft. Lanes in ask_vm_row_ids and single-vendor lanes become VM tickets; unpriced lanes not asked are marked 'Not requested'; ticked additional services become one VM price request.",
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmitIn"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}} }
       }
     },
     "/api/submissions/{submission_id}/tickets": {
@@ -305,6 +318,37 @@
         "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OrdersBody"}}} },
         "responses": { "204": {"description": "No Content"} }
       }
+    },
+    "/api/quick-check": {
+      "get": {
+        "summary": "Sales: selling price (cost x 1.111) of the 3 cheapest vendors on a lane; the 2nd is the Final Rate. Fewer than 2 vendors: available=false. Nothing is saved; vendor names/costs are not returned.",
+        "parameters": [
+          {"name": "origin", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "destination", "in": "query", "required": true, "schema": {"type": "string"}},
+          {"name": "vehicle_type", "in": "query", "required": true, "schema": {"type": "string"}}
+        ],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuickCheckResult"}}}} }
+      }
+    },
+    "/api/service-requests": {
+      "get": {
+        "summary": "Sales: this user's additional-service price requests and VM's answers.",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServiceRequestList"}}}} }
+      }
+    },
+    "/api/vm/service-requests": {
+      "get": {
+        "summary": "VM: every additional-service price request, with the winning vendor of each of the shipper's lanes.",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServiceRequestList"}}}} }
+      }
+    },
+    "/api/vm/service-requests/{submission_id}": {
+      "put": {
+        "summary": "VM: set the unit price of, or mark unavailable, the services of one request.",
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServiceAnswerIn"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServiceRequest"}}}} }
+      }
     }
   },
   "components": {
@@ -332,7 +376,14 @@
         }
       },
       "UserRoleList": { "type": "object", "properties": {"users": {"type": "array", "items": {"$ref": "#/components/schemas/UserRole"}}} },
-      "AddOn": { "type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string", "nullable": true}} },
+      "AddOn": {
+        "type": "object",
+        "properties": {
+          "label": { "type": "string" },
+          "value": { "type": "string", "nullable": true, "description": "Sales' note for the service." },
+          "service": { "type": "string", "nullable": true, "enum": ["overnight", "tkbm", "additional_drop", null], "description": "Set for services VM prices on request." }
+        }
+      },
       "SubmissionRow": {
         "type": "object",
         "properties": {
@@ -345,7 +396,8 @@
           "remarks": { "type": "string" },
           "matched_vendor": { "type": "string", "nullable": true },
           "min_trip": { "type": "integer", "nullable": true, "description": "Optional, per month; informational." },
-          "raised_to_vm": { "type": "boolean", "description": "True while an open VM ticket exists for this row (e.g. auto-raised because the lane has fewer than 2 vendors)." }
+          "raised_to_vm": { "type": "boolean", "description": "True while an open VM ticket exists for this row." },
+          "needs_vm": { "type": "boolean", "description": "Single-vendor lane in a draft: always sent to VM on submit." }
         }
       },
       "Submission": {
@@ -362,7 +414,8 @@
           "commodity_type": { "type": "string", "nullable": true },
           "high_value_fragile": { "type": "boolean" },
           "add_ons": { "type": "array", "items": {"$ref": "#/components/schemas/AddOn"} },
-          "sales_email": { "type": "string", "nullable": true, "description": "The sales user this submission belongs to; null on legacy submissions that only have a typed sales_pic." }
+          "sales_email": { "type": "string", "nullable": true, "description": "The sales user this submission belongs to; null on legacy submissions that only have a typed sales_pic." },
+          "submitted_at": { "type": "string", "nullable": true, "description": "Null while the submission is a draft." }
         }
       },
       "SubmissionList": { "type": "object", "properties": {"submissions": {"type": "array", "items": {"$ref": "#/components/schemas/Submission"}}} },
@@ -599,7 +652,8 @@
           "vehicle_type": { "type": "string" },
           "vendor": { "type": "string", "nullable": true },
           "cost": { "type": "number", "nullable": true },
-          "rate": { "type": "number", "nullable": true }
+          "rate": { "type": "number", "nullable": true },
+          "margin_pct": { "type": "number", "nullable": true, "description": "Policy margin of the lane (11.1 or 6.1, incl. PPN)." }
         }
       },
       "OrderLine": {
@@ -629,7 +683,62 @@
         }
       },
       "QuotationBody": { "type": "object", "properties": {"rows": {"type": "array", "items": {"$ref": "#/components/schemas/QuotationLine"}}}, "required": ["rows"] },
-      "OrdersBody": { "type": "object", "properties": {"rows": {"type": "array", "items": {"$ref": "#/components/schemas/OrderLine"}}}, "required": ["rows"] }
+      "OrdersBody": { "type": "object", "properties": {"rows": {"type": "array", "items": {"$ref": "#/components/schemas/OrderLine"}}}, "required": ["rows"] },
+      "SubmitIn": { "type": "object", "properties": {"ask_vm_row_ids": {"type": "array", "items": {"type": "integer"}}} },
+      "QuickWinner": { "type": "object", "properties": {"rank": {"type": "integer"}, "price": {"type": "number"}} },
+      "QuickCheckResult": {
+        "type": "object",
+        "properties": {
+          "origin": { "type": "string" },
+          "destination": { "type": "string" },
+          "vehicle_type": { "type": "string" },
+          "vendor_count": { "type": "integer" },
+          "available": { "type": "boolean" },
+          "final_rate": { "type": "number", "nullable": true },
+          "winners": { "type": "array", "items": {"$ref": "#/components/schemas/QuickWinner"} }
+        }
+      },
+      "ServiceItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "service": { "type": "string", "enum": ["overnight", "tkbm", "additional_drop"] },
+          "label": { "type": "string" },
+          "unit": { "type": "string", "description": "per malam / per orang / per titik" },
+          "note": { "type": "string", "nullable": true },
+          "unit_price": { "type": "number", "nullable": true },
+          "unavailable": { "type": "boolean" },
+          "auto_closed_sla": { "type": "boolean" },
+          "answered_by": { "type": "string", "nullable": true },
+          "answered_at": { "type": "string", "nullable": true }
+        }
+      },
+      "ServiceLane": {
+        "type": "object",
+        "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"}, "vendor": {"type": "string", "nullable": true} }
+      },
+      "ServiceRequest": {
+        "type": "object",
+        "properties": {
+          "submission_id": { "type": "integer" },
+          "shipper_name": { "type": "string", "nullable": true },
+          "sales_pic": { "type": "string", "nullable": true },
+          "sales_email": { "type": "string", "nullable": true },
+          "requested_by": { "type": "string" },
+          "created_at": { "type": "string" },
+          "aging_days": { "type": "integer" },
+          "status": { "type": "string", "enum": ["open", "done"] },
+          "items": { "type": "array", "items": {"$ref": "#/components/schemas/ServiceItem"} },
+          "lanes": { "type": "array", "items": {"$ref": "#/components/schemas/ServiceLane"}, "description": "VM only." }
+        }
+      },
+      "ServiceRequestList": { "type": "object", "properties": {"requests": {"type": "array", "items": {"$ref": "#/components/schemas/ServiceRequest"}}} },
+      "ServiceAnswer": {
+        "type": "object",
+        "required": ["id"],
+        "properties": { "id": {"type": "integer"}, "unit_price": {"type": "number", "nullable": true}, "unavailable": {"type": "boolean"} }
+      },
+      "ServiceAnswerIn": { "type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/ServiceAnswer"}}} }
     }
   }
 }

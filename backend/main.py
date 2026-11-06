@@ -205,6 +205,16 @@ class SubmissionRow(BaseModel):
 class AddOn(BaseModel):
     label: str
     value: str | None = None
+    # Set for the services VM prices on request (key of SERVICES); value is sales' note.
+    service: str | None = None
+
+
+# Additional services sales can ask VM to price: key -> (label, unit).
+SERVICES = {
+    "overnight": ("Overnight", "per malam"),
+    "tkbm": ("TKBM", "per orang"),
+    "additional_drop": ("Additional Drop Point", "per titik"),
+}
 
 
 class Submission(BaseModel):
@@ -364,6 +374,9 @@ async def upload_submission(
             add_ons_list = [AddOn(**a).model_dump() for a in json.loads(add_ons_json)]
         except (json.JSONDecodeError, TypeError, ValueError):
             raise HTTPException(400, "add_ons_json is not valid JSON")
+        for a in add_ons_list:
+            if a["service"] is not None and a["service"] not in SERVICES:
+                raise HTTPException(400, f"Unknown service: {a['service']}")
 
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -515,13 +528,20 @@ async def submit_submission(submission_id: int, body: SubmitIn, request: Request
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT submitted_at FROM submissions WHERE id = %s AND uploaded_by = %s", (submission_id, email)
+            "SELECT submitted_at, add_ons FROM submissions WHERE id = %s AND uploaded_by = %s",
+            (submission_id, email),
         )
         srow = await cur.fetchone()
         if not srow:
             raise HTTPException(404, "Submission not found")
         if srow[0] is not None:
             raise HTTPException(400, "This submission was already submitted")
+        for a in json.loads(srow[1]) if srow[1] else []:
+            if a.get("service") in SERVICES:
+                await cur.execute(
+                    "INSERT INTO service_requests (submission_id, service, note) VALUES (%s, %s, %s)",
+                    (submission_id, a["service"], (a.get("value") or None) and a["value"][:1000]),
+                )
 
         await cur.execute(
             """SELECT id, origin, destination, vehicle_type, target_rate, final_rate, remarks
@@ -1384,6 +1404,7 @@ async def submission_quotation(submission_id: int, request: Request):
             (submission_id,),
         )
         rows = await cur.fetchall()
+        services = await _service_items(cur, [submission_id])
 
     submission = _row_to_submission(srow)
 
@@ -1403,11 +1424,25 @@ async def submission_quotation(submission_id: int, request: Request):
     for r in rows:
         ws.append([r[0], r[1], r[2], float(r[3]), r[4] or "", r[5]])
 
-    if submission.add_ons:
+    items = services.get(submission_id, [])
+    if items:
         ws.append([])
-        ws.append(["Additional Services"])
-        for a in submission.add_ons:
-            ws.append([a.label, a.value or ""])
+        ws.append(["Additional Services", "Price (IDR)", "Unit", "Notes"])
+        for it in items:
+            if it.unavailable:
+                price = "Tidak tersedia"
+            elif it.unit_price is not None:
+                price = it.unit_price
+            else:
+                price = "Menunggu VM"
+            ws.append([it.label, price, it.unit, it.note or ""])
+    else:
+        legacy = [a for a in submission.add_ons if not a.service]
+        if legacy:  # submissions from before services were priced by VM
+            ws.append([])
+            ws.append(["Additional Services"])
+            for a in legacy:
+                ws.append([a.label, a.value or ""])
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1583,6 +1618,250 @@ async def create_submission_comment(submission_id: int, body: SubmissionCommentI
 
 
 # ---------------------------------------------------------------------------
+# Additional-service requests: sales ask VM the unit price of Overnight / TKBM /
+# Additional Drop Point for a shipper. One request per submitted submission; done
+# once every service has a price or is marked unavailable.
+# ---------------------------------------------------------------------------
+
+
+class ServiceItem(BaseModel):
+    id: int
+    service: str
+    label: str
+    unit: str
+    note: str | None = None
+    unit_price: float | None = None
+    unavailable: bool = False
+    auto_closed_sla: bool = False
+    answered_by: str | None = None
+    answered_at: str | None = None
+
+
+class ServiceLane(BaseModel):
+    origin: str
+    destination: str
+    vehicle_type: str
+    vendor: str | None = None
+
+
+class ServiceRequest(BaseModel):
+    submission_id: int
+    shipper_name: str | None = None
+    sales_pic: str | None = None
+    sales_email: str | None = None
+    requested_by: str
+    created_at: str
+    aging_days: int
+    status: str  # "open" | "done"
+    items: list[ServiceItem]
+    # VM only: the winning vendor of each of the shipper's priced lanes.
+    lanes: list[ServiceLane] = []
+
+
+class ServiceRequestList(BaseModel):
+    requests: list[ServiceRequest]
+
+
+class ServiceAnswer(BaseModel):
+    id: int
+    unit_price: float | None = None
+    unavailable: bool = False
+
+
+class ServiceAnswerIn(BaseModel):
+    items: list[ServiceAnswer]
+
+
+def _service_item(r) -> ServiceItem:
+    label, unit = SERVICES.get(r[2], (r[2], ""))
+    return ServiceItem(
+        id=r[0],
+        service=r[2],
+        label=label,
+        unit=unit,
+        note=r[3],
+        unit_price=float(r[4]) if r[4] is not None else None,
+        unavailable=bool(r[5]),
+        auto_closed_sla=bool(r[6]),
+        answered_by=r[7],
+        answered_at=str(r[8]) if r[8] else None,
+    )
+
+
+async def _service_items(cur, submission_ids: list[int]) -> dict[int, list[ServiceItem]]:
+    if not submission_ids:
+        return {}
+    marks = ", ".join(["%s"] * len(submission_ids))
+    await cur.execute(
+        f"""SELECT id, submission_id, service, note, unit_price, unavailable, auto_closed_sla,
+                   answered_by, answered_at
+            FROM service_requests WHERE submission_id IN ({marks}) ORDER BY id""",
+        tuple(submission_ids),
+    )
+    out: dict[int, list[ServiceItem]] = {}
+    for r in await cur.fetchall():
+        out.setdefault(r[1], []).append(_service_item(r))
+    return out
+
+
+def _item_done(it: ServiceItem) -> bool:
+    return it.unavailable or it.unit_price is not None
+
+
+async def _list_service_requests(cur, sales_email: str | None, with_lanes: bool) -> list[ServiceRequest]:
+    where = "WHERE s.uploaded_by = %s" if sales_email else ""
+    await cur.execute(
+        f"""SELECT s.id, s.shipper_name, s.sales_pic, s.sales_email, s.uploaded_by, MIN(q.created_at)
+            FROM service_requests q JOIN submissions s ON q.submission_id = s.id
+            {where}
+            GROUP BY s.id, s.shipper_name, s.sales_pic, s.sales_email, s.uploaded_by
+            ORDER BY s.id DESC""",
+        (sales_email,) if sales_email else (),
+    )
+    heads = await cur.fetchall()
+    items = await _service_items(cur, [h[0] for h in heads])
+
+    lanes_by_shipper: dict[str, list[ServiceLane]] = {}
+    if with_lanes:
+        names = list({h[1] for h in heads if h[1]})
+        if names:
+            marks = ", ".join(["%s"] * len(names))
+            await cur.execute(
+                f"""SELECT s.shipper_name, sr.origin, sr.destination, sr.vehicle_type, sr.matched_vendor
+                    FROM submission_rows sr JOIN submissions s ON sr.submission_id = s.id
+                    WHERE s.shipper_name IN ({marks}) AND s.submitted_at IS NOT NULL
+                          AND sr.final_rate IS NOT NULL
+                    ORDER BY s.id ASC, sr.id ASC""",
+                tuple(names),
+            )
+            latest: dict[str, dict] = {}
+            for name, o, d, v, vendor in await cur.fetchall():
+                latest.setdefault(name, {})[_lane_key(o, d, v)] = ServiceLane(
+                    origin=o, destination=d, vehicle_type=v, vendor=vendor
+                )
+            lanes_by_shipper = {n: list(m.values()) for n, m in latest.items()}
+
+    out = []
+    for sid, shipper, sales_pic, s_email, uploaded_by, created in heads:
+        its = items.get(sid, [])
+        now = datetime.now(created.tzinfo) if created.tzinfo else datetime.now()
+        out.append(
+            ServiceRequest(
+                submission_id=sid,
+                shipper_name=shipper,
+                sales_pic=sales_pic,
+                sales_email=s_email,
+                requested_by=uploaded_by,
+                created_at=str(created),
+                aging_days=max(0, (now - created).days),
+                status="done" if its and all(_item_done(i) for i in its) else "open",
+                items=its,
+                lanes=lanes_by_shipper.get(shipper, []) if with_lanes else [],
+            )
+        )
+    return out
+
+
+@app.get("/api/service-requests", response_model=ServiceRequestList)
+async def my_service_requests(request: Request):
+    """Sales: this user's additional-service requests and VM's answers."""
+    email = await require_role(request, "sales")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        reqs = await _list_service_requests(cur, email, with_lanes=False)
+    return ServiceRequestList(requests=reqs)
+
+
+@app.get("/api/vm/service-requests", response_model=ServiceRequestList)
+async def vm_service_requests(request: Request):
+    await require_role(request, "vm")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        reqs = await _list_service_requests(cur, None, with_lanes=True)
+    return ServiceRequestList(requests=reqs)
+
+
+@app.put("/api/vm/service-requests/{submission_id}", response_model=ServiceRequest)
+async def answer_service_request(submission_id: int, body: ServiceAnswerIn, request: Request):
+    """VM: give a unit price, or mark unavailable, for some or all of the services.
+    Items left without either stay open."""
+    email = await require_role(request, "vm")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id FROM service_requests WHERE submission_id = %s", (submission_id,))
+        ids = {r[0] for r in await cur.fetchall()}
+        if not ids:
+            raise HTTPException(404, "Service request not found")
+        for a in body.items:
+            if a.id not in ids:
+                raise HTTPException(400, "Unknown service in the request")
+            if a.unit_price is not None and a.unit_price < 0:
+                raise HTTPException(400, "Price can't be negative")
+            answered = a.unavailable or a.unit_price is not None
+            await cur.execute(
+                """UPDATE service_requests SET unit_price = %s, unavailable = %s, auto_closed_sla = 0,
+                   answered_by = %s, answered_at = IF(%s, NOW(), NULL) WHERE id = %s""",
+                (
+                    None if a.unavailable else a.unit_price,
+                    1 if a.unavailable else 0,
+                    email if answered else None,
+                    1 if answered else 0,
+                    a.id,
+                ),
+            )
+        reqs = await _list_service_requests(cur, None, with_lanes=True)
+    return next(r for r in reqs if r.submission_id == submission_id)
+
+
+# ---------------------------------------------------------------------------
+# Quick check: sales look up a lane's price without creating a submission.
+# ---------------------------------------------------------------------------
+
+
+class QuickWinner(BaseModel):
+    rank: int
+    price: float
+
+
+class QuickCheckResult(BaseModel):
+    origin: str
+    destination: str
+    vehicle_type: str
+    vendor_count: int
+    available: bool
+    final_rate: float | None = None
+    winners: list[QuickWinner] = []
+
+
+@app.get("/api/quick-check", response_model=QuickCheckResult)
+async def quick_check(
+    request: Request,
+    origin: str = Query(...),
+    destination: str = Query(...),
+    vehicle_type: str = Query(...),
+):
+    """Selling price (cost x standard markup) of the 3 cheapest vendors on a lane,
+    with the 2nd one as the Final Rate — same rule as a submission without a target.
+    Fewer than 2 vendors: not available here (sales raise a request instead).
+    Vendor names and costs are never returned."""
+    await require_role(request, "sales")
+    costs = await master_rates.find_costs(db.pool(), origin, destination, vehicle_type)
+    result = pricing.compute_final_rate(costs, None)
+    available = result.final_rate is not None
+    return QuickCheckResult(
+        origin=origin,
+        destination=destination,
+        vehicle_type=vehicle_type,
+        vendor_count=len(costs),
+        available=available,
+        final_rate=result.final_rate,
+        winners=[
+            QuickWinner(rank=i + 1, price=round(cost * pricing.MARGIN_STANDARD, 2))
+            for i, (_, cost) in enumerate(result.ranked[:3])
+        ]
+        if available
+        else [],
+    )
+
+
+# ---------------------------------------------------------------------------
 # SLA: tickets VM never touched are auto-closed after 7 days, per lane.
 # No sales notification — the outcome shows on the lane and in the Discussion.
 # ---------------------------------------------------------------------------
@@ -1631,6 +1910,23 @@ async def run_sla_sweep() -> int:
                 closed_by_submission.setdefault(submission_id, []).append(
                     f"{origin} → {destination} ({vehicle}): {outcome}"
                 )
+        await cur.execute(
+            f"""SELECT id, submission_id, service FROM service_requests
+                WHERE unavailable = 0 AND unit_price IS NULL
+                      AND created_at <= NOW() - INTERVAL {SLA_DAYS} DAY"""
+        )
+        for item_id, submission_id, service in await cur.fetchall():
+            await cur.execute(
+                """UPDATE service_requests SET unavailable = 1, auto_closed_sla = 1, answered_at = NOW()
+                   WHERE id = %s AND unavailable = 0 AND unit_price IS NULL""",
+                (item_id,),
+            )
+            if cur.rowcount == 0:
+                continue
+            count += 1
+            closed_by_submission.setdefault(submission_id, []).append(
+                f"{SERVICES.get(service, (service,))[0]}: not available"
+            )
         for submission_id, lines in closed_by_submission.items():
             await _system_comment(
                 cur,
@@ -1883,6 +2179,17 @@ async def _shipper_summaries(cur) -> dict[str, dict]:
     for name, n in await cur.fetchall():
         if name in out:
             out[name]["open_tickets"] = n
+
+    # Unanswered additional-service prices also keep a shipper from going live.
+    await cur.execute(
+        """SELECT s.shipper_name, COUNT(*)
+           FROM service_requests q JOIN submissions s ON q.submission_id = s.id
+           WHERE q.unavailable = 0 AND q.unit_price IS NULL AND s.shipper_name IS NOT NULL
+           GROUP BY s.shipper_name"""
+    )
+    for name, n in await cur.fetchall():
+        if name in out:
+            out[name]["open_tickets"] += n
     return out
 
 
