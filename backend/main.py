@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 import db
 import master_rates
+import permissions
 import pricing
 
 
@@ -53,6 +54,7 @@ def health():
 class Me(BaseModel):
     email: str | None
     role: str | None
+    permissions: dict[str, bool] = {}
 
 
 async def current_user(request: Request) -> tuple[str, str | None]:
@@ -94,10 +96,20 @@ async def require_any_role(request: Request) -> str:
     return email
 
 
+async def require_permission(request: Request, action: str) -> tuple[str, str]:
+    """Signed in and allowed `action` (see permissions.py). Returns (email, role)."""
+    email, role = await current_user(request)
+    if not email:
+        raise HTTPException(401, "Not signed in")
+    if not permissions.can(role, action):
+        raise HTTPException(403, "Not allowed")
+    return email, role
+
+
 @app.get("/api/me", response_model=Me)
 async def me(request: Request):
     email, role = await current_user(request)
-    return {"email": email, "role": role}
+    return {"email": email, "role": role, "permissions": permissions.permissions_for(role)}
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +358,7 @@ async def upload_submission(
     sales_email: str | None = Form(None),
 ):
     email = await require_role(request, "sales")
+    _, role = await current_user(request)
     sales_email = (sales_email or "").strip().lower() or None
     if sales_email:
         async with db.pool().acquire() as conn, conn.cursor() as cur:
@@ -437,7 +450,11 @@ async def upload_submission(
                     target_rate=row["target_rate"],
                     final_rate=result.final_rate,
                     remarks=result.remarks,
-                    matched_vendor=result.matched_vendor if not result.single_vendor else None,
+                    matched_vendor=(
+                        result.matched_vendor
+                        if not result.single_vendor and permissions.can(role, "seeVendorData")
+                        else None
+                    ),
                     min_trip=row["min_trip"],
                     raised_to_vm=False,
                     needs_vm=result.single_vendor,
@@ -457,7 +474,18 @@ async def upload_submission(
 
 
 @app.get("/api/submissions", response_model=SubmissionList)
-async def list_submissions(request: Request):
+async def list_submissions(request: Request, scope: str = Query("mine", pattern="^(mine|all)$")):
+    """scope=mine: this salesperson's own submissions (drafts included).
+    scope=all: every submitted request, from every salesperson — the shared,
+    read-only list any role may open."""
+    if scope == "all":
+        await require_permission(request, "viewSubmissions")
+        async with db.pool().acquire() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE submitted_at IS NOT NULL ORDER BY id DESC"
+            )
+            rows = await cur.fetchall()
+        return SubmissionList(submissions=[_row_to_submission(r) for r in rows])
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -468,11 +496,21 @@ async def list_submissions(request: Request):
     return SubmissionList(submissions=[_row_to_submission(r) for r in rows])
 
 
-async def _load_submission_detail(cur, submission_id: int, email: str) -> SubmissionDetail:
-    await cur.execute(
-        f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
-        (submission_id, email),
-    )
+async def _load_submission_detail(
+    cur, submission_id: int, email: str | None, show_vendor: bool = False
+) -> SubmissionDetail:
+    """email given: only that salesperson's own submission (drafts included).
+    email None: any submitted one, read-only (the shared view)."""
+    if email is not None:
+        await cur.execute(
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND uploaded_by = %s",
+            (submission_id, email),
+        )
+    else:
+        await cur.execute(
+            f"SELECT {SUBMISSION_COLUMNS} FROM submissions WHERE id = %s AND submitted_at IS NOT NULL",
+            (submission_id,),
+        )
     srow = await cur.fetchone()
     if not srow:
         raise HTTPException(404, "Submission not found")
@@ -497,7 +535,7 @@ async def _load_submission_detail(cur, submission_id: int, email: str) -> Submis
                 target_rate=float(r[4]) if r[4] is not None else None,
                 final_rate=float(r[5]) if r[5] is not None else None,
                 remarks=r[6] or "",
-                matched_vendor=r[7],
+                matched_vendor=r[7] if show_vendor else None,
                 min_trip=r[8],
                 raised_to_vm=bool(r[9]),
                 needs_vm=r[5] is None and r[6] == pricing.REMARK_PENDING_VM and not r[9],
@@ -509,9 +547,15 @@ async def _load_submission_detail(cur, submission_id: int, email: str) -> Submis
 
 @app.get("/api/submissions/{submission_id}", response_model=SubmissionDetail)
 async def get_submission(submission_id: int, request: Request):
-    email = await require_role(request, "sales")
+    """The owner gets their own (drafts too); anyone else may read a submitted
+    one. Vendor names only for roles that may see vendor data."""
+    email, role = await require_permission(request, "viewSubmissions")
+    show_vendor = permissions.can(role, "seeVendorData")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
-        return await _load_submission_detail(cur, submission_id, email)
+        try:
+            return await _load_submission_detail(cur, submission_id, email, show_vendor)
+        except HTTPException:
+            return await _load_submission_detail(cur, submission_id, None, show_vendor)
 
 
 class SubmitIn(BaseModel):
@@ -745,6 +789,23 @@ def _vm_only_fields(r, lane_counts: dict | None) -> dict:
     }
 
 
+def _for_viewer(req: VmRequest, role: str | None) -> VmRequest:
+    """Strip vendor names, vendor costs and cost-derived figures for anyone who
+    may not see vendor data (sales). Keeps the ticket itself fully readable."""
+    if permissions.can(role, "seeVendorData"):
+        return req
+    return req.model_copy(
+        update={
+            "resolved_vendor": None,
+            "resolved_cost": None,
+            "target_cost": None,
+            "vendor_count": None,
+            "winner_basis": None,
+            "ranked_vendors": [],
+        }
+    )
+
+
 @app.post("/api/vm-requests", response_model=VmRequest, status_code=201)
 async def create_vm_request(body: VmRequestIn, request: Request):
     email = await require_role(request, "sales")
@@ -776,12 +837,14 @@ async def create_vm_request(body: VmRequestIn, request: Request):
         req_id = cur.lastrowid
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (req_id,))
         row = await cur.fetchone()
-    return _to_vm_request(row)
+    _, role = await current_user(request)
+    return _for_viewer(_to_vm_request(row), role)
 
 
 @app.get("/api/vm/requests", response_model=VmRequestList)
 async def list_vm_requests(request: Request):
-    await require_role(request, "vm")
+    """The shared ticket queue. Every role reads it; vendor data only for VM."""
+    _, role = await require_permission(request, "viewQueue")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""{VM_REQUEST_SELECT_FROM}
@@ -790,7 +853,7 @@ async def list_vm_requests(request: Request):
         )
         rows = await cur.fetchall()
         counts = await _lane_vendor_counts(cur)
-    return VmRequestList(requests=[_to_vm_request(r, counts) for r in rows])
+    return VmRequestList(requests=[_for_viewer(_to_vm_request(r, counts), role) for r in rows])
 
 
 VM_STATUSES = ("open", "in_progress", "resolved", "closed_no_vendor", "closed_no_lower_rate")
@@ -1133,7 +1196,7 @@ async def resolve_requests_ready(request: Request, shipper_name: str | None = Qu
 
 @app.get("/api/vm/summary", response_model=VmSummary)
 async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
-    await require_role(request, "vm")
+    await require_permission(request, "viewQueue")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             """SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
@@ -1280,7 +1343,8 @@ async def submission_tickets(submission_id: int, request: Request):
             (submission_id,),
         )
         rows = await cur.fetchall()
-    return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+    _, role = await current_user(request)
+    return VmRequestList(requests=[_for_viewer(_to_vm_request(r), role) for r in rows])
 
 
 @app.get("/api/tickets", response_model=VmRequestList)
@@ -1294,7 +1358,8 @@ async def my_tickets(request: Request):
             (email,),
         )
         rows = await cur.fetchall()
-    return VmRequestList(requests=[_to_vm_request(r) for r in rows])
+    _, role = await current_user(request)
+    return VmRequestList(requests=[_for_viewer(_to_vm_request(r), role) for r in rows])
 
 
 class LaneItem(BaseModel):
@@ -1332,6 +1397,7 @@ async def my_lanes(request: Request):
     the initial check or from VM resolving it) — the basis for the global
     Active/Completed Request views, which cover ALL requested OD lanes."""
     email = await require_role(request, "sales")
+    _, role = await current_user(request)
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             """SELECT sr.id, sr.submission_id, s.shipper_name, s.sales_pic, sr.origin, sr.destination,
@@ -1372,7 +1438,7 @@ async def my_lanes(request: Request):
                 target_rate=float(r[7]) if r[7] is not None else None,
                 final_rate=float(r[8]) if r[8] is not None else None,
                 remarks=r[9] or "",
-                matched_vendor=r[10],
+                matched_vendor=r[10] if permissions.can(role, "seeVendorData") else None,
                 vm_status=r[11],
                 vm_request_id=r[12],
                 aging_days=aging,
@@ -1773,9 +1839,16 @@ async def my_service_requests(request: Request):
 
 @app.get("/api/vm/service-requests", response_model=ServiceRequestList)
 async def vm_service_requests(request: Request):
-    await require_role(request, "vm")
+    """All additional-service requests. Every role reads them; the lanes' vendor
+    names only reach viewers who may see vendor data."""
+    _, role = await require_permission(request, "viewQueue")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         reqs = await _list_service_requests(cur, None, with_lanes=True)
+    if not permissions.can(role, "seeVendorData"):
+        reqs = [
+            r.model_copy(update={"lanes": [l.model_copy(update={"vendor": None}) for l in r.lanes]})
+            for r in reqs
+        ]
     return ServiceRequestList(requests=reqs)
 
 
@@ -2339,7 +2412,7 @@ def _num(v) -> float | None:
 
 @app.get("/api/profitability/sheet", response_model=TrackerSheet)
 async def tracker_sheet(request: Request, shipper_name: str = Query(...)):
-    await require_any_role(request)
+    _, role = await require_permission(request, "viewProfitability")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await _require_live(cur, shipper_name)
         await cur.execute(
@@ -2369,12 +2442,21 @@ async def tracker_sheet(request: Request, shipper_name: str = Query(...)):
             )
             for r in await cur.fetchall()
         ]
+    if not permissions.can(role, "seeVendorData"):
+        quotation = [q.model_copy(update={"vendor": None, "cost": None, "margin_pct": None}) for q in quotation]
+        orders = [
+            o.model_copy(update={"planned_vendor": None, "est_cost": None, "actual_vendor": None,
+                                 "actual_invoice_cost": None})
+            for o in orders
+        ]
     return TrackerSheet(shipper_name=shipper_name, quotation=quotation, orders=orders)
 
 
 @app.put("/api/profitability/quotation", status_code=204)
 async def save_tracker_quotation(body: QuotationBody, request: Request, shipper_name: str = Query(...)):
-    await require_any_role(request)
+    # Editing needs the vendor/cost columns, which only VM sees — a save from a
+    # redacted sheet would overwrite them with blanks.
+    await require_permission(request, "editProfitability")
     rows = [r for r in body.rows if r.origin.strip() or r.destination.strip() or r.vehicle_type.strip()]
     if len(rows) > TRACKER_MAX_ROWS:
         raise HTTPException(400, f"At most {TRACKER_MAX_ROWS} rows")
@@ -2408,7 +2490,7 @@ def _parse_date(value: str | None):
 
 @app.put("/api/profitability/orders", status_code=204)
 async def save_tracker_orders(body: OrdersBody, request: Request, shipper_name: str = Query(...)):
-    await require_any_role(request)
+    await require_permission(request, "editProfitability")
     if len(body.rows) > TRACKER_MAX_ROWS:
         raise HTTPException(400, f"At most {TRACKER_MAX_ROWS} rows")
     clean = lambda v: (v or "").strip() or None

@@ -1,6 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: ["./index.html", "./src/**/*.{js,jsx}"],
+  // relative: resolve globs from this file, so builds work from any working directory.
+  content: { relative: true, files: ["./index.html", "./src/**/*.{js,jsx}"] },
   theme: {
     extend: {
       fontFamily: {
