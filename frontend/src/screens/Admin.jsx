@@ -106,6 +106,7 @@ export function AdminPanel() {
             >
               <option value="sales">Sales</option>
               <option value="vm">VM</option>
+              <option value="procurement">Procurement</option>
               <option value="superadmin">Superadmin</option>
             </select>
           </div>
@@ -151,6 +152,7 @@ export function AdminPanel() {
                   >
                     <option value="sales">Sales</option>
                     <option value="vm">VM</option>
+                    <option value="procurement">Procurement</option>
                     <option value="superadmin">Superadmin</option>
                   </select>
                 </Td>

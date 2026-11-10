@@ -53,11 +53,24 @@ def health():
 
 class Me(BaseModel):
     email: str | None
-    role: str | None
+    role: str | None  # effective role (the "view as" role while a superadmin previews)
     permissions: dict[str, bool] = {}
+    real_role: str | None = None
+    view_as_options: list[str] = []
 
 
 async def current_user(request: Request) -> tuple[str, str | None]:
+    """(email, effective role). A real superadmin may send `X-View-As: <role>` to have
+    every endpoint answer as that role would — permissions, redaction and all. The
+    header is ignored for anyone else, so it can't be used to gain access."""
+    email, role = await _real_user(request)
+    view_as = (request.headers.get("x-view-as") or "").strip().lower()
+    if role == "superadmin" and view_as in permissions.VIEW_AS_ROLES:
+        return email, view_as
+    return email, role
+
+
+async def _real_user(request: Request) -> tuple[str, str | None]:
     email = request.headers.get("x-forwarded-email")
     if not email:
         return None, None
@@ -73,7 +86,7 @@ async def require_role(request: Request, role: str) -> str:
     email, actual_role = await current_user(request)
     if not email:
         raise HTTPException(401, "Not signed in")
-    if actual_role != role and actual_role != "superadmin":
+    if not permissions.satisfies(actual_role, role):
         raise HTTPException(403, f"Not provisioned as {role}")
     return email
 
@@ -91,7 +104,7 @@ async def require_any_role(request: Request) -> str:
     email, actual_role = await current_user(request)
     if not email:
         raise HTTPException(401, "Not signed in")
-    if actual_role not in ("sales", "vm", "superadmin"):
+    if actual_role not in permissions.ROLES:
         raise HTTPException(403, "Not provisioned")
     return email
 
@@ -109,7 +122,14 @@ async def require_permission(request: Request, action: str) -> tuple[str, str]:
 @app.get("/api/me", response_model=Me)
 async def me(request: Request):
     email, role = await current_user(request)
-    return {"email": email, "role": role, "permissions": permissions.permissions_for(role)}
+    _, real_role = await _real_user(request)
+    return {
+        "email": email,
+        "role": role,
+        "permissions": permissions.permissions_for(role),
+        "real_role": real_role,
+        "view_as_options": list(permissions.VIEW_AS_ROLES) if real_role == "superadmin" else [],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +165,7 @@ async def list_users(request: Request):
 @app.post("/api/admin/users", response_model=UserRole, status_code=201)
 async def upsert_user(body: UserRoleIn, request: Request):
     await require_superadmin(request)
-    if body.role not in ("sales", "vm", "superadmin"):
+    if body.role not in permissions.ROLES:
         raise HTTPException(400, "role must be one of: sales, vm, superadmin")
     email = body.email.strip().lower()
     if not email:
@@ -2313,7 +2333,7 @@ async def confirm_go_live(body: GoLiveIn, request: Request):
             if d["open_tickets"] > 0 or d["priced"] == 0:
                 raise HTTPException(400, f"{name} still has open tickets or no priced lanes")
 
-        await cur.execute("SELECT email FROM user_roles WHERE role IN ('vm', 'superadmin')")
+        await cur.execute("SELECT email FROM user_roles WHERE role IN ('vm', 'procurement', 'superadmin')")
         vm_emails = [r[0] for r in await cur.fetchall() if r[0] != email]
 
         for name in names:

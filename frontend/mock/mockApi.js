@@ -13,12 +13,14 @@ const USERS = [
   { email: "fajar@ninjavan.co", role: "sales", display_name: "Fajar Ramadhan" },
   { email: "siti@ninjavan.co", role: "sales", display_name: "Siti Nurhaliza" },
   { email: "baskoro@ninjavan.co", role: "vm", display_name: "Baskoro Nugroho" },
+  { email: "rizky@ninjavan.co", role: "procurement", display_name: "Rizky Procurement" },
 ];
-const AS = { sales: "dewi@ninjavan.co", vm: "baskoro@ninjavan.co", superadmin: "michael@ninjavan.co" };
+const AS = { sales: "dewi@ninjavan.co", vm: "baskoro@ninjavan.co", procurement: "rizky@ninjavan.co", superadmin: "michael@ninjavan.co" };
+const VIEW_AS_ROLES = ["sales", "vm", "procurement"];
 
 function perms(role) {
   const sales = role === "sales" || role === "superadmin";
-  const vm = role === "vm" || role === "superadmin";
+  const vm = role === "vm" || role === "procurement" || role === "superadmin";
   const any = !!role;
   return {
     viewQueue: any, viewSubmissions: any, viewProfitability: any, comment: any, confirmGoLive: any,
@@ -158,19 +160,23 @@ export default function mockApi() {
         const url = new URL(req.url, "http://x");
         const p = url.pathname;
         const m = req.method;
-        const P = perms(role);
-        const me = AS[role];
+        // Same rule as the backend: X-View-As is honoured only for a real superadmin.
+        const viewAs = String(req.headers["x-view-as"] || "").toLowerCase();
+        const realRole = role;
+        const effRole = realRole === "superadmin" && VIEW_AS_ROLES.includes(viewAs) ? viewAs : realRole;
+        const P = perms(effRole);
+        const me = AS[realRole];
         const deny = () => json(res, 403, { detail: "Not allowed" });
 
         if (p === "/api/__mock/role") { role = url.searchParams.get("as") || role; return json(res, 200, { role }); }
-        if (p === "/api/me") return json(res, 200, { email: me, role, permissions: P, mock: true });
+        if (p === "/api/me") return json(res, 200, { email: me, role: effRole, permissions: P, real_role: realRole, view_as_options: realRole === "superadmin" ? VIEW_AS_ROLES : [], mock: true });
         if (p === "/api/users") return json(res, 200, { users: USERS });
         if (p === "/api/notifications") return json(res, 200, { notifications: [{ id: 1, submission_id: 100, shipper_name: "PT Nusantara Cipta Mandiri", message: "Baskoro mentioned you: checking Balikpapan with Duta Trans today.", created_at: daysAgo(1), read_at: null }], unread_count: 1 });
         if (p.startsWith("/api/notifications/")) return json(res, 204);
         if (p === "/api/ticket-views") return json(res, 200, { views: [] });
         if (/^\/api\/submissions\/\d+\/view$/.test(p)) return json(res, 204);
 
-        if (p === "/api/vm/requests" && m === "GET") return json(res, 200, { requests: tickets.map((t) => redactTicket(t, role)) });
+        if (p === "/api/vm/requests" && m === "GET") return json(res, 200, { requests: tickets.map((t) => redactTicket(t, effRole)) });
         if (p === "/api/vm/summary") return json(res, 200, summary());
         if (p === "/api/vm/service-requests") return json(res, 200, { requests: serviceRequests.map((s) => (P.seeVendorData ? s : { ...s, lanes: s.lanes.map((l) => ({ ...l, vendor: null })) })) });
         if (p === "/api/service-requests") return json(res, 200, { requests: serviceRequests.filter((s) => s.requested_by === me) });
@@ -217,7 +223,7 @@ export default function mockApi() {
               min_trip: r.min_trip, auto_closed_sla: !!t?.auto_closed_sla };
           })) });
         }
-        if (p === "/api/tickets") return json(res, 200, { requests: tickets.filter((t) => t.requested_by === me).map((t) => redactTicket(t, role)) });
+        if (p === "/api/tickets") return json(res, 200, { requests: tickets.filter((t) => t.requested_by === me).map((t) => redactTicket(t, effRole)) });
         if (p === "/api/quick-check") {
           const o = url.searchParams.get("origin"), d = url.searchParams.get("destination"), v = url.searchParams.get("vehicle_type");
           const t = tickets.find((x) => x.origin === o && x.destination === d && x.vehicle_type === v && x.ranked_vendors.length > 1);

@@ -5,16 +5,29 @@ which menu entries, columns and buttons appear. The frontend renders from the
 map /api/me returns; every endpoint below re-checks the same rules, so hiding
 something in the UI is never the only protection.
 
-Roles: "sales", "vm" (vendor management), "superadmin" (everything).
+Roles: "sales", "vm" (vendor management), "procurement" (same rights as vm, its own
+label), "superadmin" (everything). A superadmin may also *view as* another role: the
+backend then answers exactly as it would for that role (see main.current_user).
 """
 
-ROLES = ("sales", "vm", "superadmin")
+ROLES = ("sales", "vm", "procurement", "superadmin")
+# Roles that do vendor-management work. Anything gated on "vm" accepts all of these.
+VM_ROLES = ("vm", "procurement")
+# What a superadmin can switch the app to with "View as".
+VIEW_AS_ROLES = ("sales", "vm", "procurement")
+
+
+def satisfies(actual: str | None, required: str) -> bool:
+    """Does a user with role `actual` pass a check that requires role `required`?"""
+    if actual == "superadmin" or actual == required:
+        return True
+    return required == "vm" and actual in VM_ROLES
 
 
 def permissions_for(role: str | None) -> dict[str, bool]:
     signed_in = role in ROLES
     sales = role in ("sales", "superadmin")
-    vm = role in ("vm", "superadmin")
+    vm = role in VM_ROLES or role == "superadmin"
     return {
         # Everyone provisioned: the shared, read-only views.
         "viewQueue": signed_in,

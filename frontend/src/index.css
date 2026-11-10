@@ -5,6 +5,9 @@
 body {
   background: #f7f5f5;
   color: #1c1919;
+  /* Inter: cv11 = simpler "a", ss01 = open digits; keeps numbers easy to read in tables. */
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
 }
 
 .hero-gradient {

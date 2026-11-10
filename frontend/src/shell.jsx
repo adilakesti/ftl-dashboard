@@ -7,6 +7,7 @@ import { SalesView } from "./screens/Sales.jsx";
 import { Submissions } from "./screens/Submissions.jsx";
 import { MasterRatesPanel, PrioritizationScreen, ServicesScreen } from "./screens/Vm.jsx";
 import { useDirectoryUsers, useMe, userLabel } from "./shared.jsx";
+import { getViewAs, setViewAs } from "./viewAs.js";
 
 // ---------------------------------------------------------------------------
 // One app for every role. Everyone gets the same shell and the same screens; each
@@ -79,7 +80,7 @@ const PAGE = {
 // Fallback for a backend that does not send `permissions` yet (mirrors backend/permissions.py).
 function permissionsFromRole(role) {
   const sales = role === "sales" || role === "superadmin";
-  const vm = role === "vm" || role === "superadmin";
+  const vm = role === "vm" || role === "procurement" || role === "superadmin";
   const any = !!role;
   return {
     viewQueue: any, viewSubmissions: any, viewProfitability: any, comment: any, confirmGoLive: any,
@@ -196,20 +197,44 @@ export function NotificationBell({ onNavigate }) {
   );
 }
 
-const ROLE_LABEL = { sales: "Sales", vm: "Vendor mgmt", superadmin: "Superadmin" };
+const ROLE_LABEL = { sales: "Sales", vm: "Vendor mgmt", procurement: "Procurement", superadmin: "Superadmin" };
 
-// Local preview only (npm run dev:mock): switch the role the mock API answers as.
+// Superadmin only: preview the whole app as another role (see viewAs.js).
+function ViewAsSwitch({ me }) {
+  const current = getViewAs();
+  return (
+    <label className="hidden md:flex items-center gap-1.5 text-xs text-ink-500 border border-ink-200 rounded-md pl-2 pr-1 py-1">
+      View as
+      <select
+        value={current}
+        onChange={(e) => setViewAs(e.target.value)}
+        className="bg-transparent font-medium text-ink-900 focus:outline-none"
+        aria-label="View the app as role"
+      >
+        <option value="">Superadmin</option>
+        {me.view_as_options.map((r) => (
+          <option key={r} value={r}>
+            {ROLE_LABEL[r] || r}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+// Local preview only (npm run dev:mock): switch which signed-in user the mock API is.
 function MockRoleSwitch({ role }) {
   const change = async (as) => {
     await fetch(`/api/__mock/role?as=${as}`);
-    window.location.reload();
+    setViewAs("");
   };
   return (
     <label className="hidden md:flex items-center gap-1.5 text-xs text-amber-800 bg-amber-50 ring-1 ring-amber-200 rounded-md px-2 py-1">
-      Preview as
+      Mock user
       <select value={role} onChange={(e) => change(e.target.value)} className="bg-transparent font-medium focus:outline-none">
         <option value="sales">Sales</option>
         <option value="vm">Vendor mgmt</option>
+        <option value="procurement">Procurement</option>
         <option value="superadmin">Superadmin</option>
       </select>
     </label>
@@ -353,7 +378,8 @@ export function AppInner() {
         )}
         <span className="flex-1" />
 
-        {me.mock && <MockRoleSwitch role={me.role} />}
+        {me.mock && <MockRoleSwitch role={me.real_role || me.role} />}
+        {me.view_as_options?.length > 0 && <ViewAsSwitch me={me} />}
         <NotificationBell onNavigate={onNotification} />
         <div className="hidden sm:flex items-center gap-2 pl-2 border-l border-ink-100">
           <span className="h-8 w-8 rounded-full bg-brand-50 text-brand-700 text-xs font-semibold flex items-center justify-center">
@@ -361,10 +387,21 @@ export function AppInner() {
           </span>
           <span className="leading-tight">
             <span className="block text-sm text-ink-900 max-w-[160px] truncate">{displayName}</span>
-            <span className="block text-[11px] text-ink-500">{ROLE_LABEL[me.role] || me.role}</span>
+            <span className="block text-[11px] text-ink-500">{ROLE_LABEL[me.real_role || me.role] || me.role}</span>
           </span>
         </div>
       </header>
+
+      {me.real_role === "superadmin" && me.role !== "superadmin" && (
+        <div className="sticky top-14 z-20 bg-amber-50 border-b border-amber-200 px-4 py-1.5 text-sm text-amber-900 flex items-center justify-center gap-3">
+          <span>
+            Viewing as <b>{ROLE_LABEL[me.role] || me.role}</b>: you see exactly what they see. Actions still run as you.
+          </span>
+          <button onClick={() => setViewAs("")} className="underline font-medium">
+            Back to superadmin
+          </button>
+        </div>
+      )}
 
       <div className="flex">
         <aside className="hidden lg:block w-56 shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto border-r border-ink-100 bg-white">

@@ -3,5 +3,11 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 COPY backend/ .
+# Apply Debian security updates (e.g. zlib1g). Placed AFTER copying the code on
+# purpose: the code changes on every deploy, so Docker can't reuse a stale cached
+# result of this step and the base image's OS packages are always current.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
