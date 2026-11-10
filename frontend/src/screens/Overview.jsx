@@ -13,6 +13,7 @@ export function Overview({ me, onNavigate }) {
       .then(setSummary);
   }, []);
 
+  const queue = perms.workTickets ? "vm-queue" : "dashboard";
   if (!tickets) return <p className="text-sm text-ink-400">Loading…</p>;
   const stats = queueStats(tickets);
   const oldest = tickets
@@ -23,7 +24,7 @@ export function Overview({ me, onNavigate }) {
   const actions = [
     perms.createRequest && { label: "New rate request", screen: "new-request", primary: true },
     perms.quickCheck && { label: "Quick check a lane", screen: "quick-check" },
-    perms.workTickets && { label: "Work the ticket queue", screen: "queue", primary: !perms.createRequest },
+    perms.workTickets && { label: "Open VM queue", screen: "vm-queue", primary: !perms.createRequest },
     perms.manageRates && { label: "Upload vendor rates", screen: "rates" },
   ].filter(Boolean);
 
@@ -46,25 +47,25 @@ export function Overview({ me, onNavigate }) {
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatTile label="Open tickets" value={stats.open} onClick={() => onNavigate("queue")} />
-        <StatTile label="Near SLA" value={stats.near} tone={stats.near ? "warning" : undefined} onClick={() => onNavigate("queue")} />
-        <StatTile label="Overdue" value={stats.overdue} tone={stats.overdue ? "danger" : undefined} onClick={() => onNavigate("queue")} />
-        <StatTile label="Closed tickets" value={stats.closed} onClick={() => onNavigate("queue")} />
+        <StatTile label="Lanes waiting on VM" value={stats.open} onClick={() => onNavigate(queue)} />
+        <StatTile label="Near SLA" value={stats.near} tone={stats.near ? "warning" : undefined} onClick={() => onNavigate(queue)} />
+        <StatTile label="Overdue" value={stats.overdue} tone={stats.overdue ? "danger" : undefined} onClick={() => onNavigate(queue)} />
+        <StatTile label="Lanes closed" value={stats.closed} onClick={() => onNavigate(queue)} />
       </div>
 
       <div className="grid lg:grid-cols-5 gap-6">
         <section className="lg:col-span-3 bg-white rounded-xl border border-ink-100 shadow-sm">
           <header className="flex items-center justify-between px-4 py-3 border-b border-ink-100">
             <h2 className="font-semibold text-sm">Waiting longest</h2>
-            <button onClick={() => onNavigate("queue")} className="text-xs text-brand-600 hover:underline">
-              Open queue
+            <button onClick={() => onNavigate(queue)} className="text-xs text-brand-600 hover:underline">
+              {perms.workTickets ? "Open VM queue" : "Open dashboard"}
             </button>
           </header>
           <ul>
             {oldest.map((t) => (
               <li key={t.id}>
                 <button
-                  onClick={() => onNavigate("queue", { search: `#${t.id}` })}
+                  onClick={() => t.submission_id && onNavigate("dashboard", { ticket: t.submission_id })}
                   className="w-full flex items-center gap-3 px-4 py-2.5 border-t first:border-t-0 border-ink-100 hover:bg-ink-50 text-left"
                 >
                   <AgePill t={t} />

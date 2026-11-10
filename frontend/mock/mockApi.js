@@ -64,7 +64,7 @@ submissions.forEach((s, si) => {
   for (let k = 0; k < 5; k++) {
     const [o, d, v] = LANES[(si * 3 + k) % LANES.length];
     const cost = 3_000_000 + ((si * 7 + k * 13) % 17) * 600_000;
-    const status = STATUSES[(si * 5 + k) % STATUSES.length];
+    const status = si === 3 ? "open" : STATUSES[(si * 5 + k) % STATUSES.length];
     const age = [9, 6, 5, 2, 1, 8, 3, 0, 4][(si + k) % 9];
     const ranked = VENDORS.slice(0, 1 + ((si + k) % 4)).map((vn, j) => ({ vendor: vn, cost: cost + j * 250_000 }));
     const target = k % 3 ? Math.round(cost * 1.05) : null;
@@ -95,6 +95,18 @@ submissions.forEach((s, si) => {
 });
 
 const comments = { 100: [{ id: 1, submission_id: 100, author_email: "baskoro@ninjavan.co", message: "@Dewi checking Balikpapan with Duta Trans today.", created_at: daysAgo(1) }] };
+
+const ticketNo = (id) => `FTL-${String(id).padStart(6, "0")}`;
+
+function detailOf(s, P, me) {
+  const ts = tickets.filter((t) => t.submission_id === s.id);
+  return {
+    submission: s,
+    rows: rows[s.id].map((r) => (P.seeVendorData ? r : { ...r, matched_vendor: null })),
+    ticket_no: ticketNo(s.id),
+    editable: !!P.createRequest && s.uploaded_by === me && ts.every((t) => t.status === "open"),
+  };
+}
 
 function redactTicket(t, role) {
   if (perms(role).seeVendorData) return t;
@@ -176,7 +188,45 @@ export default function mockApi() {
         if (p === "/api/ticket-views") return json(res, 200, { views: [] });
         if (/^\/api\/submissions\/\d+\/view$/.test(p)) return json(res, 204);
 
-        if (p === "/api/vm/requests" && m === "GET") return json(res, 200, { requests: tickets.map((t) => redactTicket(t, effRole)) });
+        if (p === "/api/vm/requests" && m === "GET") {
+          const sid = Number(url.searchParams.get("submission_id")) || null;
+          return json(res, 200, { requests: tickets.filter((t) => !sid || t.submission_id === sid).map((t) => redactTicket(t, effRole)) });
+        }
+        if (p === "/api/ticket-board") {
+          const vmOnly = url.searchParams.get("vm_only") === "true";
+          if (vmOnly && !P.workTickets) return deny();
+          const board = submissions
+            .map((s) => {
+              const rs = rows[s.id];
+              const ts = tickets.filter((t) => t.submission_id === s.id);
+              const open = ts.filter((t) => t.status === "open" || t.status === "in_progress");
+              return {
+                id: s.id, ticket_no: ticketNo(s.id), raised_at: s.submitted_at, shipper_name: s.shipper_name,
+                sales_pic: s.sales_pic, sales_email: s.sales_email, raised_by: s.uploaded_by,
+                commodity_type: s.commodity_type, add_ons: s.add_ons, lane_count: rs.length,
+                vehicles: [...new Set(rs.map((r) => r.vehicle_type))].sort(),
+                has_target_rate: rs.some((r) => r.target_rate != null), priced_count: rs.filter((r) => r.final_rate != null).length,
+                vm_open_count: open.length, vm_working_count: open.filter((t) => t.status === "in_progress").length,
+                oldest_open_days: open.length ? Math.max(...open.map((t) => t.aging_days)) : null,
+                editable: P.createRequest && s.uploaded_by === me && ts.every((t) => t.status === "open"),
+              };
+            })
+            .filter((t) => !vmOnly || t.vm_open_count > 0)
+            .sort((a, b) => String(b.raised_at).localeCompare(String(a.raised_at)));
+          return json(res, 200, { tickets: board });
+        }
+        if (p === "/api/available-routes") {
+          if (!P.quickCheck) return deny();
+          const seen = new Map();
+          for (const t of tickets) {
+            const k = `${t.origin}|${t.destination}|${t.vehicle_type}`;
+            if (seen.has(k)) continue;
+            const c = t.ranked_vendors.map((v) => v.cost).sort((a, b) => a - b);
+            seen.set(k, { origin: t.origin, destination: t.destination, vehicle_type: t.vehicle_type,
+              status: c.length >= 2 ? "ready" : "single", final_rate: c.length >= 2 ? Math.round(c[1] * 1.111) : null });
+          }
+          return json(res, 200, { routes: [...seen.values()] });
+        }
         if (p === "/api/vm/summary") return json(res, 200, summary());
         if (p === "/api/vm/service-requests") return json(res, 200, { requests: serviceRequests.map((s) => (P.seeVendorData ? s : { ...s, lanes: s.lanes.map((l) => ({ ...l, vendor: null })) })) });
         if (p === "/api/service-requests") return json(res, 200, { requests: serviceRequests.filter((s) => s.requested_by === me) });
@@ -199,7 +249,20 @@ export default function mockApi() {
         if ((mm = p.match(/^\/api\/submissions\/(\d+)$/)) && m === "GET") {
           const s = submissions.find((x) => x.id === Number(mm[1]));
           if (!s) return json(res, 404, { detail: "Submission not found" });
-          return json(res, 200, { submission: s, rows: rows[s.id].map((r) => (P.seeVendorData ? r : { ...r, matched_vendor: null })) });
+          return json(res, 200, detailOf(s, P, me));
+        }
+        if ((mm = p.match(/^\/api\/submissions\/(\d+)\/rows\/(\d+)$/)) && m === "PUT") {
+          const s = submissions.find((x) => x.id === Number(mm[1]));
+          const ts = tickets.filter((t) => t.submission_id === s?.id);
+          if (!s || !P.createRequest || s.uploaded_by !== me || !ts.every((t) => t.status === "open")) {
+            return json(res, 403, { detail: "Only the person who raised this ticket can edit it, until VM starts on it" });
+          }
+          const b = await readBody(req);
+          const r = rows[s.id].find((x) => x.id === Number(mm[2]));
+          Object.assign(r, { origin: b.origin, destination: b.destination, vehicle_type: b.vehicle_type, target_rate: b.target_rate, min_trip: b.min_trip });
+          const t = ts.find((x) => x.submission_row_id === r.id);
+          if (t) Object.assign(t, { origin: b.origin, destination: b.destination, vehicle_type: b.vehicle_type, target_rate: b.target_rate });
+          return json(res, 200, detailOf(s, P, me));
         }
         if ((mm = p.match(/^\/api\/submissions\/(\d+)\/comments$/))) {
           const sid = Number(mm[1]);

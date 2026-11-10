@@ -272,6 +272,14 @@ class SubmissionList(BaseModel):
 class SubmissionDetail(BaseModel):
     submission: Submission
     rows: list[SubmissionRow]
+    ticket_no: str | None = None
+    # True when the viewer raised this ticket and VM hasn't started on any lane yet.
+    editable: bool = False
+
+
+def ticket_no(submission_id: int) -> str:
+    """The ticket number people quote: FTL- + the submission's running id, 6 digits."""
+    return f"FTL-{submission_id:06d}"
 
 
 CSV_HEADER_ALIASES = {
@@ -573,9 +581,11 @@ async def get_submission(submission_id: int, request: Request):
     show_vendor = permissions.can(role, "seeVendorData")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         try:
-            return await _load_submission_detail(cur, submission_id, email, show_vendor)
+            detail = await _load_submission_detail(cur, submission_id, email, show_vendor)
         except HTTPException:
-            return await _load_submission_detail(cur, submission_id, None, show_vendor)
+            detail = await _load_submission_detail(cur, submission_id, None, show_vendor)
+        editable = permissions.can(role, "createRequest") and await _ticket_editable(cur, submission_id, email)
+    return detail.model_copy(update={"ticket_no": ticket_no(submission_id), "editable": editable})
 
 
 class SubmitIn(BaseModel):
@@ -862,14 +872,18 @@ async def create_vm_request(body: VmRequestIn, request: Request):
 
 
 @app.get("/api/vm/requests", response_model=VmRequestList)
-async def list_vm_requests(request: Request):
-    """The shared ticket queue. Every role reads it; vendor data only for VM."""
+async def list_vm_requests(request: Request, submission_id: int | None = Query(None)):
+    """Every lane-level VM request (optionally one ticket's). Every role reads it;
+    vendor data only for VM."""
     _, role = await require_permission(request, "viewQueue")
+    where, args = ("WHERE sr.submission_id = %s", (submission_id,)) if submission_id else ("", ())
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""{VM_REQUEST_SELECT_FROM}
+                {where}
                 ORDER BY (vr.status IN ('resolved', 'closed_no_vendor', 'closed_no_lower_rate')),
-                         vr.created_at ASC"""
+                         vr.created_at ASC""",
+            args,
         )
         rows = await cur.fetchall()
         counts = await _lane_vendor_counts(cur)
@@ -2537,3 +2551,214 @@ async def save_tracker_orders(body: OrdersBody, request: Request, shipper_name: 
         except Exception:
             await conn.rollback()
             raise
+
+
+# ---------------------------------------------------------------------------
+# Dashboard Ticket: one ticket = one submitted rate request (several lanes).
+# ---------------------------------------------------------------------------
+
+
+class TicketSummary(BaseModel):
+    id: int
+    ticket_no: str
+    raised_at: str
+    shipper_name: str | None
+    sales_pic: str | None
+    sales_email: str | None
+    raised_by: str
+    commodity_type: str | None = None
+    add_ons: list[AddOn] = []
+    lane_count: int
+    vehicles: list[str]
+    has_target_rate: bool
+    priced_count: int
+    vm_open_count: int  # lanes waiting on VM or being worked on
+    vm_working_count: int  # lanes VM marked in progress
+    oldest_open_days: int | None = None
+    editable: bool = False
+
+
+class TicketSummaryList(BaseModel):
+    tickets: list[TicketSummary]
+
+
+async def _ticket_editable(cur, submission_id: int, email: str | None) -> bool:
+    """The salesperson who raised a ticket may edit it until VM starts on any lane
+    (any of its VM requests has left 'open')."""
+    if not email:
+        return False
+    await cur.execute(
+        """SELECT s.uploaded_by,
+                  (SELECT COUNT(*) FROM vm_requests vr JOIN submission_rows r ON vr.submission_row_id = r.id
+                   WHERE r.submission_id = s.id AND vr.status <> 'open')
+           FROM submissions s WHERE s.id = %s AND s.submitted_at IS NOT NULL""",
+        (submission_id,),
+    )
+    row = await cur.fetchone()
+    return bool(row) and row[0] == email and int(row[1]) == 0
+
+
+@app.get("/api/ticket-board", response_model=TicketSummaryList)
+async def ticket_board(request: Request, vm_only: bool = Query(False)):
+    """All raised tickets, newest first. vm_only=true: just the tickets with at least
+    one lane VM still has to answer or is working on (the VM queue, VM roles only)."""
+    email, role = await require_permission(request, "workTickets" if vm_only else "viewQueue")
+    vm_filter = "AND COALESCE(v.vm_open, 0) > 0" if vm_only else ""
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"""SELECT s.id, s.submitted_at, s.shipper_name, s.sales_pic, s.sales_email, s.uploaded_by,
+                       s.commodity_type, s.add_ons,
+                       a.lanes, a.vehicles, a.with_target, a.priced,
+                       COALESCE(v.vm_open, 0), COALESCE(v.vm_working, 0), v.oldest_open, COALESCE(v.vm_started, 0)
+                FROM submissions s
+                JOIN (SELECT submission_id, COUNT(*) lanes,
+                             GROUP_CONCAT(DISTINCT vehicle_type ORDER BY vehicle_type SEPARATOR '|') vehicles,
+                             SUM(target_rate IS NOT NULL) with_target, SUM(final_rate IS NOT NULL) priced
+                      FROM submission_rows GROUP BY submission_id) a ON a.submission_id = s.id
+                LEFT JOIN (SELECT r.submission_id,
+                                  SUM(vr.status IN ('open', 'in_progress')) vm_open,
+                                  SUM(vr.status = 'in_progress') vm_working,
+                                  MIN(CASE WHEN vr.status IN ('open', 'in_progress') THEN vr.created_at END) oldest_open,
+                                  SUM(vr.status <> 'open') vm_started
+                           FROM vm_requests vr JOIN submission_rows r ON vr.submission_row_id = r.id
+                           GROUP BY r.submission_id) v ON v.submission_id = s.id
+                WHERE s.submitted_at IS NOT NULL {vm_filter}
+                ORDER BY s.submitted_at DESC, s.id DESC"""
+        )
+        rows = await cur.fetchall()
+    can_edit = permissions.can(role, "createRequest")
+    now = datetime.now()
+    tickets = []
+    for r in rows:
+        oldest = r[14]
+        tickets.append(
+            TicketSummary(
+                id=r[0], ticket_no=ticket_no(r[0]), raised_at=str(r[1]), shipper_name=r[2], sales_pic=r[3],
+                sales_email=r[4], raised_by=r[5], commodity_type=r[6],
+                add_ons=[AddOn(**a) for a in json.loads(r[7])] if r[7] else [],
+                lane_count=int(r[8]), vehicles=[v for v in (r[9] or "").split("|") if v],
+                has_target_rate=int(r[10] or 0) > 0, priced_count=int(r[11] or 0),
+                vm_open_count=int(r[12]), vm_working_count=int(r[13]),
+                oldest_open_days=max(0, (now - oldest.replace(tzinfo=None)).days) if oldest else None,
+                editable=can_edit and r[5] == email and int(r[15]) == 0,
+            )
+        )
+    return TicketSummaryList(tickets=tickets)
+
+
+class LaneEdit(BaseModel):
+    origin: str
+    destination: str
+    vehicle_type: str
+    target_rate: float | None = None
+    min_trip: int | None = None
+
+
+@app.put("/api/submissions/{submission_id}/rows/{row_id}", response_model=SubmissionDetail)
+async def edit_lane(submission_id: int, row_id: int, body: LaneEdit, request: Request):
+    """The ticket's owner edits one lane until VM starts on the ticket. The lane is
+    re-priced from master rates; a lane that now needs VM gets a request, and an
+    open request on it is updated to the new details."""
+    email = await require_role(request, "sales")
+    _, role = await current_user(request)
+    origin, destination, vehicle = body.origin.strip(), body.destination.strip(), body.vehicle_type.strip()
+    if not (origin and destination and vehicle):
+        raise HTTPException(400, "Origin, destination and vehicle are required")
+    if body.target_rate is not None and body.target_rate <= 0:
+        raise HTTPException(400, "Target rate must be positive")
+    if body.min_trip is not None and body.min_trip < 0:
+        raise HTTPException(400, "Minimum trip can't be negative")
+
+    pool = db.pool()
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        if not await _ticket_editable(cur, submission_id, email):
+            raise HTTPException(403, "Only the person who raised this ticket can edit it, until VM starts on it")
+        await cur.execute(
+            "SELECT id FROM submission_rows WHERE id = %s AND submission_id = %s", (row_id, submission_id)
+        )
+        if not await cur.fetchone():
+            raise HTTPException(404, "Lane not found on this ticket")
+
+    costs = await master_rates.find_costs(pool, origin, destination, vehicle)
+    result = pricing.compute_final_rate(costs, body.target_rate)
+    basis, ranked_json = _snapshot(result)
+
+    async with pool.acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """UPDATE submission_rows
+               SET origin = %s, destination = %s, vehicle_type = %s, target_rate = %s, min_trip = %s,
+                   final_rate = %s, remarks = %s, matched_vendor = %s, matched_cost = %s,
+                   matched_basis = %s, matched_ranked = %s, margin_pct = %s
+               WHERE id = %s""",
+            (origin, destination, vehicle, body.target_rate, body.min_trip, result.final_rate, result.remarks,
+             result.matched_vendor, result.matched_cost, basis, ranked_json, result.margin_pct, row_id),
+        )
+        await cur.execute(
+            "SELECT id FROM vm_requests WHERE submission_row_id = %s AND status = 'open'", (row_id,)
+        )
+        open_req = await cur.fetchone()
+        if open_req:
+            await cur.execute(
+                """UPDATE vm_requests SET origin = %s, destination = %s, vehicle_type = %s, target_rate = %s,
+                          current_final_rate = %s WHERE id = %s""",
+                (origin, destination, vehicle, body.target_rate, result.final_rate, open_req[0]),
+            )
+        elif result.single_vendor:
+            await cur.execute(
+                """INSERT INTO vm_requests
+                   (submission_row_id, origin, destination, vehicle_type, target_rate, current_final_rate, requested_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (row_id, origin, destination, vehicle, body.target_rate, result.final_rate, email),
+            )
+        await _system_comment(cur, submission_id, f"{email} edited a lane: {origin} → {destination} ({vehicle}).")
+        detail = await _load_submission_detail(cur, submission_id, email, permissions.can(role, "seeVendorData"))
+        editable = await _ticket_editable(cur, submission_id, email)
+    return detail.model_copy(update={"ticket_no": ticket_no(submission_id), "editable": editable})
+
+
+# ---------------------------------------------------------------------------
+# Available routes: which lanes have master rates — for sales, without vendor data.
+# ---------------------------------------------------------------------------
+
+
+class AvailableRoute(BaseModel):
+    origin: str
+    destination: str
+    vehicle_type: str
+    # "ready": 2+ vendors, priced instantly. "single": 1 vendor, VM must confirm.
+    status: str
+    final_rate: float | None = None  # what a request without target rate would quote
+
+
+class AvailableRouteList(BaseModel):
+    routes: list[AvailableRoute]
+
+
+@app.get("/api/available-routes", response_model=AvailableRouteList)
+async def available_routes(request: Request):
+    """Every OD + vehicle with vendor rates on file, and the price a request without a
+    target rate would get (same rule as Quick Check). Vendor names and costs are never
+    returned."""
+    await require_permission(request, "quickCheck")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """SELECT origin, destination, vehicle_type, norm_origin, norm_destination, norm_vehicle_type,
+                      norm_vendor_name, cost
+               FROM vendor_rates
+               ORDER BY norm_origin, norm_destination, norm_vehicle_type"""
+        )
+        rows = await cur.fetchall()
+    lanes: dict[tuple, dict] = {}
+    for o, d, v, no, nd, nv, vendor, cost in rows:
+        lane = lanes.setdefault((no, nd, nv), {"origin": o, "destination": d, "vehicle_type": v, "costs": {}})
+        lane["costs"][vendor] = float(cost)
+    routes = []
+    for lane in lanes.values():
+        result = pricing.compute_final_rate(lane["costs"], None)
+        routes.append(
+            AvailableRoute(
+                origin=lane["origin"], destination=lane["destination"], vehicle_type=lane["vehicle_type"],
+                status="single" if result.single_vendor else "ready", final_rate=result.final_rate,
+            )
+        )
+    return AvailableRouteList(routes=routes)

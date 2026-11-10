@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { AdminPanel } from "./screens/Admin.jsx";
 import { Overview } from "./screens/Overview.jsx";
 import { ProfitabilityView } from "./screens/Profitability.jsx";
-import { TicketQueue, isOpenStatus } from "./screens/Queue.jsx";
 import { SalesView } from "./screens/Sales.jsx";
-import { Submissions } from "./screens/Submissions.jsx";
+import { AvailableRoutes, TicketBoard, TicketDetail } from "./screens/Tickets.jsx";
 import { MasterRatesPanel, PrioritizationScreen, ServicesScreen } from "./screens/Vm.jsx";
 import { useDirectoryUsers, useMe, userLabel } from "./shared.jsx";
 import { getViewAs, setViewAs } from "./viewAs.js";
@@ -29,6 +28,8 @@ const ICONS = {
   users: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8",
   bell: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0",
   menu: "M3 6h18M3 12h18M3 18h18",
+  route: "M6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM6 15V9a4 4 0 0 1 4-4h6M18 9v6a4 4 0 0 1-4 4H8",
+  queue: "M4 6h16M4 10h16M4 14h10M4 18h7M17 15l2 2 4-4",
 };
 
 function Icon({ name, className = "h-4 w-4" }) {
@@ -40,20 +41,26 @@ function Icon({ name, className = "h-4 w-4" }) {
 }
 
 const NAV = [
-  [null, [{ id: "overview", label: "Overview", icon: "home", when: (p) => p.viewQueue }]],
+  [
+    null,
+    [
+      { id: "overview", label: "Overview", icon: "home", when: (p) => p.viewQueue },
+      { id: "dashboard", label: "Dashboard Ticket", icon: "ticket", when: (p) => p.viewQueue },
+    ],
+  ],
   [
     "Requests",
     [
       { id: "new-request", label: "New request", icon: "plus", when: (p) => p.createRequest },
       { id: "my-requests", label: "My requests", icon: "inbox", when: (p) => p.createRequest },
       { id: "quick-check", label: "Quick check", icon: "search", when: (p) => p.quickCheck },
-      { id: "submissions", label: "All submissions", icon: "list", when: (p) => p.viewSubmissions },
+      { id: "available-routes", label: "Available Route", icon: "route", when: (p) => p.quickCheck },
     ],
   ],
   [
-    "Vendor work",
+    "Vendor Management",
     [
-      { id: "queue", label: "Ticket queue", icon: "ticket", when: (p) => p.viewQueue, count: true },
+      { id: "vm-queue", label: "VM queue", icon: "queue", when: (p) => p.workTickets, count: true },
       { id: "prioritization", label: "Prioritization", icon: "flag", when: (p) => p.viewQueue },
       { id: "services", label: "Extra services", icon: "tool", when: (p) => p.viewQueue },
       { id: "rates", label: "Master vendor rates", icon: "database", when: (p) => p.manageRates },
@@ -68,8 +75,9 @@ const PAGE = {
   "new-request": ["New rate request", "Shipper details, then the lanes. Rates come back instantly where vendors exist."],
   "my-requests": ["My requests", "Your lanes and extra-service requests, and where each one stands."],
   "quick-check": ["Quick check", "Look up a lane's price without saving anything."],
-  submissions: ["All submissions", "Every submitted rate request, from every salesperson."],
-  queue: ["Ticket queue", "Lanes sales sent to vendor management, oldest first. SLA is 7 days."],
+  "available-routes": ["Available Route", "Routes and trucks with vendor rates on file, and what they quote."],
+  dashboard: ["Dashboard Ticket", "Every raised ticket, newest first. Open one to see each OD pair and its status."],
+  "vm-queue": ["VM queue", "Tickets with lanes waiting on vendor management or being worked on. SLA is 7 days per lane."],
   prioritization: ["Prioritization", "Lanes that keep coming back: worth a vendor push."],
   services: ["Extra services", "Overnight, TKBM and extra drop-point prices sales asked for."],
   rates: ["Master vendor rates", "Upload or check the vendor cost list every price is computed from."],
@@ -92,9 +100,18 @@ function permissionsFromRole(role) {
 const visibleNav = (perms) =>
   NAV.map(([group, items]) => [group, items.filter((i) => i.when(perms))]).filter(([, items]) => items.length);
 
+const SCREEN_ALIASES = { queue: "dashboard", submissions: "dashboard" }; // old links keep working
+
 function screenFromUrl(allowed) {
-  const s = new URLSearchParams(window.location.search).get("screen");
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get("screen");
+  const s = SCREEN_ALIASES[raw] || raw;
   return allowed.includes(s) ? s : allowed[0];
+}
+
+function ticketFromUrl() {
+  const t = Number(new URLSearchParams(window.location.search).get("ticket"));
+  return Number.isInteger(t) && t > 0 ? t : null;
 }
 
 export function BrandedMessage({ title, children }) {
@@ -256,23 +273,31 @@ export function AppInner() {
   const allowed = nav.flatMap(([, items]) => items.map((i) => i.id));
 
   useEffect(() => {
-    if (perms && !screen) setScreen(screenFromUrl(allowed));
+    if (perms && !screen) {
+      setScreen(screenFromUrl(allowed));
+      setScreenArgs({ ticket: ticketFromUrl() });
+    }
   }, [perms, screen]);
 
+  // VM queue badge: how many tickets are waiting on VM.
   useEffect(() => {
-    if (!perms?.viewQueue) return;
+    if (!perms?.workTickets) return;
     const load = () =>
-      fetch("/api/vm/requests")
-        .then((r) => (r.ok ? r.json() : { requests: [] }))
-        .then((d) => setOpenCount(d.requests.filter((t) => isOpenStatus(t.status)).length))
+      fetch("/api/ticket-board?vm_only=true")
+        .then((r) => (r.ok ? r.json() : { tickets: [] }))
+        .then((d) => setOpenCount(d.tickets.length))
         .catch(() => {});
     load();
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
-  }, [perms?.viewQueue]);
+  }, [perms?.workTickets]);
 
   useEffect(() => {
-    const onPop = () => perms && setScreen(screenFromUrl(allowed));
+    const onPop = () => {
+      if (!perms) return;
+      setScreen(screenFromUrl(allowed));
+      setScreenArgs({ ticket: ticketFromUrl() });
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   });
@@ -295,7 +320,8 @@ export function AppInner() {
     setScreen(id);
     setScreenArgs(args);
     setNavOpen(false);
-    const url = `${window.location.pathname}?screen=${encodeURIComponent(id)}`;
+    const url =
+      `${window.location.pathname}?screen=${encodeURIComponent(id)}` + (args.ticket ? `&ticket=${args.ticket}` : "");
     if (url !== window.location.pathname + window.location.search) window.history.pushState(null, "", url);
     window.scrollTo(0, 0);
   };
@@ -305,16 +331,15 @@ export function AppInner() {
   const onSalesTab = (t) =>
     t === "new" ? navigate("new-request") : t === "quick" ? navigate("quick-check") : navigate("my-requests", { salesTab: t });
 
-  const onNotification = (submissionId) => {
-    setFocusSubmissionId(submissionId);
-    navigate(perms.workTickets || !perms.createRequest ? "queue" : "my-requests");
-  };
+  // Notifications are about a ticket: open it.
+  const onNotification = (submissionId) => navigate("dashboard", { ticket: submissionId });
+  const openTicket = (from) => (id) => navigate(from, { ticket: id });
 
   const runGlobalSearch = (e) => {
     e.preventDefault();
     const q = globalSearch.trim();
     if (!q) return;
-    navigate("queue", { search: q });
+    navigate("dashboard", { search: q });
     setGlobalSearch("");
   };
 
@@ -370,7 +395,7 @@ export function AppInner() {
               <input
                 value={globalSearch}
                 onChange={(e) => setGlobalSearch(e.target.value)}
-                placeholder="Search tickets: shipper, city, #id"
+                placeholder="Search tickets: FTL no., shipper, sales"
                 className="w-full bg-ink-50 border border-ink-100 rounded-md pl-8 pr-3 py-1.5 text-sm focus:outline-none focus:bg-white focus:border-brand-600"
               />
             </div>
@@ -431,15 +456,18 @@ export function AppInner() {
                 onFocusHandled={() => setFocusSubmissionId(null)}
               />
             )}
-            {screen === "submissions" && <Submissions perms={perms} />}
-            {screen === "queue" && (
-              <TicketQueue
-                perms={perms}
-                initialSearch={screenArgs.search || ""}
-                focusSubmissionId={focusSubmissionId}
-                onFocusHandled={() => setFocusSubmissionId(null)}
-              />
-            )}
+            {(screen === "dashboard" || screen === "vm-queue") &&
+              (screenArgs.ticket ? (
+                <TicketDetail ticketId={screenArgs.ticket} perms={perms} onBack={() => navigate(screen)} />
+              ) : (
+                <TicketBoard
+                  key={screen}
+                  mode={screen === "vm-queue" ? "vm" : "all"}
+                  initialSearch={screenArgs.search || ""}
+                  onOpen={openTicket(screen)}
+                />
+              ))}
+            {screen === "available-routes" && <AvailableRoutes />}
             {screen === "prioritization" && <PrioritizationScreen />}
             {screen === "services" && <ServicesScreen canEdit={!!perms.workTickets} />}
             {screen === "rates" && <MasterRatesPanel />}

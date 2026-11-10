@@ -180,9 +180,34 @@
         "responses": { "201": {"description": "Created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequest"}}}} }
       }
     },
+    "/api/ticket-board": {
+      "get": {
+        "summary": "Dashboard Ticket: every raised ticket (one submitted request, several lanes), newest first, with ticket number (FTL-000123), lane count, vehicles, whether any lane has a target rate, and how many lanes wait on VM. vm_only=true is the VM queue (VM/procurement/superadmin only).",
+        "parameters": [{"name": "vm_only", "in": "query", "required": false, "schema": {"type": "boolean", "default": false}}],
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TicketSummaryList"}}}} }
+      }
+    },
+    "/api/submissions/{submission_id}/rows/{row_id}": {
+      "put": {
+        "summary": "The ticket's owner edits one lane (OD, vehicle, target rate, min trips) until VM starts on the ticket; the lane is re-priced from master rates and its VM request created or updated as needed.",
+        "parameters": [
+          {"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}},
+          {"name": "row_id", "in": "path", "required": true, "schema": {"type": "integer"}}
+        ],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LaneEdit"}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}}, "400": {"description": "Invalid lane"}, "403": {"description": "Not the owner, or VM already started"} }
+      }
+    },
+    "/api/available-routes": {
+      "get": {
+        "summary": "Sales: every OD + vehicle with vendor rates on file, whether it can be quoted instantly (2+ vendors) or needs VM (1 vendor), and the no-target price. Never returns vendor names or costs.",
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AvailableRouteList"}}}} }
+      }
+    },
     "/api/vm/requests": {
       "get": {
-        "summary": "Shared ticket queue: every vendor-management request (open/in_progress first) with aging_days. Readable by all roles; vendor names, costs and rankings are stripped for roles without vendor-data access (sales).",
+        "summary": "Every lane-level vendor-management request (open/in_progress first) with aging_days, optionally for one ticket. Readable by all roles; vendor names, costs and rankings are stripped for roles without vendor-data access (sales).",
+        "parameters": [{"name": "submission_id", "in": "query", "required": false, "schema": {"type": "integer"}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestList"}}}} }
       }
     },
@@ -425,8 +450,37 @@
       "SubmissionList": { "type": "object", "properties": {"submissions": {"type": "array", "items": {"$ref": "#/components/schemas/Submission"}}} },
       "SubmissionDetail": {
         "type": "object",
-        "properties": { "submission": {"$ref": "#/components/schemas/Submission"}, "rows": {"type": "array", "items": {"$ref": "#/components/schemas/SubmissionRow"}} }
+        "properties": { "submission": {"$ref": "#/components/schemas/Submission"}, "rows": {"type": "array", "items": {"$ref": "#/components/schemas/SubmissionRow"}},
+          "ticket_no": {"type": "string", "nullable": true, "example": "FTL-000123"},
+          "editable": {"type": "boolean", "description": "The viewer raised this ticket and VM hasn't started on any lane."} }
       },
+      "TicketSummary": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "integer"}, "ticket_no": {"type": "string", "example": "FTL-000123"}, "raised_at": {"type": "string"},
+          "shipper_name": {"type": "string", "nullable": true}, "sales_pic": {"type": "string", "nullable": true},
+          "sales_email": {"type": "string", "nullable": true}, "raised_by": {"type": "string"},
+          "commodity_type": {"type": "string", "nullable": true},
+          "add_ons": {"type": "array", "items": {"$ref": "#/components/schemas/AddOn"}},
+          "lane_count": {"type": "integer"}, "vehicles": {"type": "array", "items": {"type": "string"}},
+          "has_target_rate": {"type": "boolean"}, "priced_count": {"type": "integer"},
+          "vm_open_count": {"type": "integer"}, "vm_working_count": {"type": "integer"},
+          "oldest_open_days": {"type": "integer", "nullable": true}, "editable": {"type": "boolean"}
+        }
+      },
+      "TicketSummaryList": { "type": "object", "properties": { "tickets": {"type": "array", "items": {"$ref": "#/components/schemas/TicketSummary"}} } },
+      "LaneEdit": {
+        "type": "object",
+        "required": ["origin", "destination", "vehicle_type"],
+        "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"},
+          "target_rate": {"type": "number", "nullable": true}, "min_trip": {"type": "integer", "nullable": true} }
+      },
+      "AvailableRoute": {
+        "type": "object",
+        "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"},
+          "status": {"type": "string", "enum": ["ready", "single"]}, "final_rate": {"type": "number", "nullable": true} }
+      },
+      "AvailableRouteList": { "type": "object", "properties": { "routes": {"type": "array", "items": {"$ref": "#/components/schemas/AvailableRoute"}} } },
       "VmRequestIn": {
         "type": "object",
         "required": ["origin", "destination", "vehicle_type"],
