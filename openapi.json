@@ -357,14 +357,16 @@
       "Health": { "type": "object", "properties": {"status": {"type": "string"}} },
       "Me": {
         "type": "object",
-        "properties": { "email": {"type": "string", "nullable": true}, "role": {"type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null]},
-          "permissions": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "What this user may see/do (backend/permissions.py): viewQueue, viewSubmissions, viewProfitability, comment, confirmGoLive, createRequest, quickCheck, workTickets, manageRates, editProfitability, seeVendorData, manageUsers."} }
+        "properties": { "email": {"type": "string", "nullable": true}, "role": {"type": "string", "nullable": true, "enum": ["sales", "vm", "procurement", "superadmin", null]},
+          "permissions": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "What this user may see/do (backend/permissions.py): viewQueue, viewSubmissions, viewProfitability, comment, confirmGoLive, createRequest, quickCheck, workTickets, manageRates, editProfitability, seeVendorData, manageUsers."},
+          "real_role": {"type": "string", "nullable": true, "description": "The user's actual role; differs from role while a superadmin uses View as (X-View-As header)."},
+          "view_as_options": {"type": "array", "items": {"type": "string", "enum": ["sales", "vm", "procurement"]}, "description": "Roles a superadmin may preview as; empty for everyone else."} }
       },
       "UserRole": {
         "type": "object",
         "properties": {
           "email": { "type": "string" },
-          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] },
+          "role": { "type": "string", "enum": ["sales", "vm", "procurement", "superadmin"] },
           "display_name": { "type": "string", "nullable": true, "description": "Human-friendly name; shown in the Sales PIC dropdown and Sales filters." }
         }
       },
@@ -373,7 +375,7 @@
         "required": ["email", "role"],
         "properties": {
           "email": { "type": "string" },
-          "role": { "type": "string", "enum": ["sales", "vm", "superadmin"] },
+          "role": { "type": "string", "enum": ["sales", "vm", "procurement", "superadmin"] },
           "display_name": { "type": "string", "nullable": true, "description": "Human-friendly name; shown in the Sales PIC dropdown and Sales filters." }
         }
       },
