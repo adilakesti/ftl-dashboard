@@ -62,3 +62,28 @@ contract; the essentials:
 Scaffolded projects: `docker compose up -d db && docker compose run --rm migrate`, then
 the backend on `:8000` (reading `DATABASE_URL`) and `npm run dev` in `frontend/`.
 <!-- END substrait-app contract -->
+
+## Working together (Adilla + Michael)
+
+Two people push to `main`. To avoid conflicts and overwriting each other's work:
+
+1. **Pull before you start any change:** `git pull`. Do it before editing, not after.
+2. **Pull again right before you push.** If GitHub has new commits, `git pull --rebase`,
+   re-run the build (`npm run build` in `frontend/`), then push.
+3. **Never force-push** (`--force`) or skip the check (`--no-verify`).
+
+The shared pre-push check in `.githooks/pre-push` shows the latest commits on `main`
+and blocks a push that is behind GitHub. Turn it on once per clone:
+
+```
+git config core.hooksPath .githooks
+git config pull.rebase true
+```
+
+For Claude: at the start of any coding task here, run `git pull` and say whether the
+other person pushed anything new; before any push, show the latest commits on `main`.
+
+**Frontend layout:** `frontend/src/shell.jsx` (app shell + menu), `shared.jsx`,
+`screens/*.jsx`. Who sees what is decided only in `backend/permissions.py`; the menu
+reads it from `/api/me`. `npm run dev:mock` previews the UI with sample data and a
+role switch, no backend needed.

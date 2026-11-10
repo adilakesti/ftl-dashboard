@@ -1,0 +1,56 @@
+#!/bin/sh
+# Shared pre-push check (enable once per clone: git config core.hooksPath .githooks).
+# Before every push: fetch GitHub, show the latest commits on main, and block the
+# push if someone pushed work you do not have yet, so nobody overwrites anyone.
+
+remote="$1"
+branch=$(git rev-parse --abbrev-ref HEAD)
+
+echo ""
+echo "=== Checking GitHub for the latest pushes before you push ==="
+if ! git fetch "$remote" --quiet; then
+  echo "Could not reach GitHub to check for new commits. Push cancelled."
+  echo "(To push anyway, run: git push --no-verify)"
+  exit 1
+fi
+
+upstream="$remote/$branch"
+if ! git rev-parse --verify --quiet "$upstream" >/dev/null; then
+  echo "Branch '$branch' is new on GitHub. Latest commits on main:"
+  git log "$remote/main" -5 --format='  %h  %an, %ar  -  %s'
+  missing=$(git rev-list --count "HEAD..$remote/main")
+  if [ "$missing" -gt 0 ]; then
+    echo ""
+    echo "Note: main has $missing commit(s) this branch doesn't include yet (merge or rebase before opening a PR)."
+  fi
+  echo ""
+  exit 0
+fi
+if [ "$branch" != "main" ]; then
+  echo ""
+  echo "Latest commits on main:"
+  git log "$remote/main" -3 --format='  %h  %an, %ar  -  %s'
+  missing=$(git rev-list --count "HEAD..$remote/main")
+  [ "$missing" -gt 0 ] && echo "Note: main has $missing commit(s) this branch doesn't include yet."
+fi
+
+echo ""
+echo "Latest commits on GitHub ($upstream):"
+git log "$upstream" -5 --format='  %h  %an, %ar  -  %s'
+
+behind=$(git rev-list --count "HEAD..$upstream")
+ahead=$(git rev-list --count "$upstream..HEAD")
+
+echo ""
+if [ "$behind" -gt 0 ]; then
+  echo "STOP: GitHub has $behind new commit(s) you don't have yet:"
+  git log "HEAD..$upstream" --format='  %h  %an, %ar  -  %s'
+  echo ""
+  echo "Pull them in first, then push again:"
+  echo "  git pull --rebase"
+  exit 1
+fi
+
+echo "You're up to date with GitHub. Pushing $ahead new commit(s)."
+echo ""
+exit 0
