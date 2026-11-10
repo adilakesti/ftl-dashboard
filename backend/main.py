@@ -27,6 +27,10 @@ import pricing
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with db.lifespan_pool():
+        try:
+            await _number_unnumbered_tickets()
+        except Exception as e:  # never block startup on this
+            print(f"ticket numbering skipped: {e}")
         sweeper = asyncio.create_task(_sla_sweep_loop())
         try:
             yield
@@ -277,9 +281,55 @@ class SubmissionDetail(BaseModel):
     editable: bool = False
 
 
-def ticket_no(submission_id: int) -> str:
-    """The ticket number people quote: FTL- + the submission's running id, 6 digits."""
-    return f"FTL-{submission_id:06d}"
+def ticket_no(seq: int | None, submission_id: int | None = None) -> str | None:
+    """The ticket number people quote: FTL- + the running number given at submit
+    (submissions.ticket_seq), 6 digits. Falls back to the row id only for a
+    submission numbered before the sequence existed."""
+    n = seq if seq is not None else submission_id
+    return f"FTL-{n:06d}" if n is not None else None
+
+
+async def _assign_ticket_number(cur, submission_id: int) -> None:
+    """Mark a submission submitted and give it the next running ticket number. The
+    unique key on ticket_seq makes a simultaneous submit fail instead of sharing a
+    number; we then just take the next one."""
+    for attempt in range(5):
+        await cur.execute("SELECT COALESCE(MAX(ticket_seq), 0) + 1 FROM submissions")
+        seq = (await cur.fetchone())[0]
+        try:
+            await cur.execute(
+                "UPDATE submissions SET submitted_at = NOW(), ticket_seq = %s WHERE id = %s",
+                (seq, submission_id),
+            )
+            return
+        except Exception as e:  # duplicate ticket_seq from a concurrent submit
+            if "Duplicate" not in str(e) or attempt == 4:
+                raise
+
+
+async def _number_unnumbered_tickets() -> None:
+    """Give every submitted ticket without a number one, oldest first (backfill for
+    tickets raised before ticket_seq existed). Safe to run on every startup."""
+    if db.pool() is None:
+        return
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT id FROM submissions WHERE submitted_at IS NOT NULL AND ticket_seq IS NULL ORDER BY submitted_at, id"
+        )
+        ids = [r[0] for r in await cur.fetchall()]
+        if not ids:
+            return
+        await cur.execute("SELECT COALESCE(MAX(ticket_seq), 0) FROM submissions")
+        seq = (await cur.fetchone())[0]
+        for sid in ids:
+            seq += 1
+            await cur.execute("UPDATE submissions SET ticket_seq = %s WHERE id = %s AND ticket_seq IS NULL", (seq, sid))
+
+
+async def _ticket_no_of(cur, submission_id: int) -> str | None:
+    await cur.execute("SELECT ticket_seq FROM submissions WHERE id = %s", (submission_id,))
+    row = await cur.fetchone()
+    return ticket_no(row[0] if row else None, submission_id)
 
 
 CSV_HEADER_ALIASES = {
@@ -585,7 +635,8 @@ async def get_submission(submission_id: int, request: Request):
         except HTTPException:
             detail = await _load_submission_detail(cur, submission_id, None, show_vendor)
         editable = permissions.can(role, "createRequest") and await _ticket_editable(cur, submission_id, email)
-    return detail.model_copy(update={"ticket_no": ticket_no(submission_id), "editable": editable})
+        number = await _ticket_no_of(cur, submission_id)
+    return detail.model_copy(update={"ticket_no": number, "editable": editable})
 
 
 class SubmitIn(BaseModel):
@@ -642,7 +693,7 @@ async def submit_submission(submission_id: int, body: SubmitIn, request: Request
                 await cur.execute(
                     "UPDATE submission_rows SET remarks = 'Not requested' WHERE id = %s", (row_id,)
                 )
-        await cur.execute("UPDATE submissions SET submitted_at = NOW() WHERE id = %s", (submission_id,))
+        await _assign_ticket_number(cur, submission_id)
         return await _load_submission_detail(cur, submission_id, email)
 
 
@@ -2609,7 +2660,8 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
             f"""SELECT s.id, s.submitted_at, s.shipper_name, s.sales_pic, s.sales_email, s.uploaded_by,
                        s.commodity_type, s.add_ons,
                        a.lanes, a.vehicles, a.with_target, a.priced,
-                       COALESCE(v.vm_open, 0), COALESCE(v.vm_working, 0), v.oldest_open, COALESCE(v.vm_started, 0)
+                       COALESCE(v.vm_open, 0), COALESCE(v.vm_working, 0), v.oldest_open, COALESCE(v.vm_started, 0),
+                       s.ticket_seq
                 FROM submissions s
                 JOIN (SELECT submission_id, COUNT(*) lanes,
                              GROUP_CONCAT(DISTINCT vehicle_type ORDER BY vehicle_type SEPARATOR '|') vehicles,
@@ -2633,7 +2685,7 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
         oldest = r[14]
         tickets.append(
             TicketSummary(
-                id=r[0], ticket_no=ticket_no(r[0]), raised_at=str(r[1]), shipper_name=r[2], sales_pic=r[3],
+                id=r[0], ticket_no=ticket_no(r[16], r[0]), raised_at=str(r[1]), shipper_name=r[2], sales_pic=r[3],
                 sales_email=r[4], raised_by=r[5], commodity_type=r[6],
                 add_ons=[AddOn(**a) for a in json.loads(r[7])] if r[7] else [],
                 lane_count=int(r[8]), vehicles=[v for v in (r[9] or "").split("|") if v],
@@ -2713,7 +2765,8 @@ async def edit_lane(submission_id: int, row_id: int, body: LaneEdit, request: Re
         await _system_comment(cur, submission_id, f"{email} edited a lane: {origin} → {destination} ({vehicle}).")
         detail = await _load_submission_detail(cur, submission_id, email, permissions.can(role, "seeVendorData"))
         editable = await _ticket_editable(cur, submission_id, email)
-    return detail.model_copy(update={"ticket_no": ticket_no(submission_id), "editable": editable})
+        number = await _ticket_no_of(cur, submission_id)
+    return detail.model_copy(update={"ticket_no": number, "editable": editable})
 
 
 # ---------------------------------------------------------------------------
