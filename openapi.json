@@ -11,7 +11,7 @@
     },
     "/api/me": {
       "get": {
-        "summary": "Return the signed-in user's email (from SSO) and their provisioned role (sales/vm/superadmin), if any.",
+        "summary": "Return the signed-in user's email (from SSO), their provisioned role (sales/vm/superadmin), if any, and the permission map the UI renders from.",
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Me"}}}} }
       }
     },
@@ -63,13 +63,14 @@
     },
     "/api/submissions": {
       "get": {
-        "summary": "Sales: list the current user's past submissions.",
+        "summary": "List submissions: scope=mine (default, sales only) is the user's own incl. drafts; scope=all is every submitted request, readable by any role.",
+        "parameters": [{"name": "scope", "in": "query", "required": false, "schema": {"type": "string", "enum": ["mine", "all"], "default": "mine"}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionList"}}}} }
       }
     },
     "/api/submissions/{submission_id}": {
       "get": {
-        "summary": "Sales: fetch one submission and its computed rows.",
+        "summary": "Fetch one submission and its rows: the owner gets their own (drafts too); any role may read a submitted one. Vendor names only for roles with vendor-data access.",
         "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubmissionDetail"}}}} }
       },
@@ -181,7 +182,7 @@
     },
     "/api/vm/requests": {
       "get": {
-        "summary": "VM: list all vendor-management requests (open/in_progress first), each with an aging_days count.",
+        "summary": "Shared ticket queue: every vendor-management request (open/in_progress first) with aging_days. Readable by all roles; vendor names, costs and rankings are stripped for roles without vendor-data access (sales).",
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmRequestList"}}}} }
       }
     },
@@ -251,7 +252,7 @@
     "/api/master-rates/export": { "get": {"summary": "VM: download all master vendor rates as a CSV file.", "responses": {"200": {"description": "A CSV file", "content": {"text/csv": {}}}}} },
     "/api/vm/summary": {
       "get": {
-        "summary": "VM: prioritization summary — 'seeking_lower_rate' is still-open requests with an existing Final Rate the sales target didn't meet; 'missing_lanes' is lanes VM has already closed as closed_no_vendor, accumulated by how often that's happened. Both ranked by count; default top 10, pass a higher limit for the full list.",
+        "summary": "Prioritization summary (readable by all roles) — 'seeking_lower_rate' is still-open requests with an existing Final Rate the sales target didn't meet; 'missing_lanes' is lanes VM has already closed as closed_no_vendor, accumulated by how often that's happened. Both ranked by count; default top 10, pass a higher limit for the full list.",
         "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 10, "minimum": 1, "maximum": 1000}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmSummary"}}}} }
       }
@@ -298,14 +299,14 @@
     },
     "/api/profitability/sheet": {
       "get": {
-        "summary": "A live shipper's two sheets: quotation cost and orders.",
+        "summary": "A live shipper's two sheets: quotation cost and orders. Vendor, cost and margin columns are blank for roles without vendor-data access.",
         "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrackerSheet"}}}} }
       }
     },
     "/api/profitability/quotation": {
       "put": {
-        "summary": "Replace a live shipper's Sheet 1 (quotation cost) rows.",
+        "summary": "Replace a live shipper's Sheet 1 (quotation cost) rows. VM/superadmin only.",
         "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
         "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuotationBody"}}} },
         "responses": { "204": {"description": "No Content"} }
@@ -313,7 +314,7 @@
     },
     "/api/profitability/orders": {
       "put": {
-        "summary": "Replace a live shipper's Sheet 2 (orders) rows.",
+        "summary": "Replace a live shipper's Sheet 2 (orders) rows. VM/superadmin only.",
         "parameters": [{"name": "shipper_name", "in": "query", "required": true, "schema": {"type": "string"}}],
         "requestBody": { "required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OrdersBody"}}} },
         "responses": { "204": {"description": "No Content"} }
@@ -338,7 +339,7 @@
     },
     "/api/vm/service-requests": {
       "get": {
-        "summary": "VM: every additional-service price request, with the winning vendor of each of the shipper's lanes.",
+        "summary": "Every additional-service price request, readable by all roles; the winning vendor of each lane only for roles with vendor-data access.",
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ServiceRequestList"}}}} }
       }
     },
@@ -356,7 +357,8 @@
       "Health": { "type": "object", "properties": {"status": {"type": "string"}} },
       "Me": {
         "type": "object",
-        "properties": { "email": {"type": "string", "nullable": true}, "role": {"type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null]} }
+        "properties": { "email": {"type": "string", "nullable": true}, "role": {"type": "string", "nullable": true, "enum": ["sales", "vm", "superadmin", null]},
+          "permissions": {"type": "object", "additionalProperties": {"type": "boolean"}, "description": "What this user may see/do (backend/permissions.py): viewQueue, viewSubmissions, viewProfitability, comment, confirmGoLive, createRequest, quickCheck, workTickets, manageRates, editProfitability, seeVendorData, manageUsers."} }
       },
       "UserRole": {
         "type": "object",
