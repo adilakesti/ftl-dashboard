@@ -200,7 +200,7 @@
     },
     "/api/available-routes": {
       "get": {
-        "summary": "Sales: every OD + vehicle with vendor rates on file, whether it can be quoted instantly (2+ vendors) or needs VM (1 vendor), and the no-target price. Never returns vendor names or costs.",
+        "summary": "Sales: every OD + vehicle combination with at least one vendor rate on file, so sales knows what can be served. Only the lane: no price, vendor names, costs or vendor counts.",
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AvailableRouteList"}}}} }
       }
     },
@@ -477,8 +477,7 @@
       },
       "AvailableRoute": {
         "type": "object",
-        "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"},
-          "status": {"type": "string", "enum": ["ready", "single"]}, "final_rate": {"type": "number", "nullable": true} }
+        "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"} }
       },
       "AvailableRouteList": { "type": "object", "properties": { "routes": {"type": "array", "items": {"$ref": "#/components/schemas/AvailableRoute"}} } },
       "VmRequestIn": {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { L2_LOCATIONS, VEHICLE_TYPES, canonicalL2 } from "../l2Locations.js";
 import { Discussion, STATUS_LABEL } from "../shared.jsx";
 import { AgePill, StatTile, StatusBadge, isOpenStatus, rp } from "./Queue.jsx";
@@ -534,14 +534,93 @@ export function TicketDetail({ ticketId, perms, onBack }) {
 }
 
 // ---------------------------------------------------------------------------
-// Available routes (sales): lanes with vendor rates on file, no vendor data
+// Available routes (sales): which OD + vehicle combinations we can serve. Only the
+// lane itself — no price, vendor or vendor count — so sales knows what to sell.
 // ---------------------------------------------------------------------------
+
+function MultiSelect({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const shown = options.filter((o) => o.value.toLowerCase().includes(q.trim().toLowerCase()));
+  const toggle = (v) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const summary =
+    selected.length === 0 ? `All ${label.toLowerCase()}s` : selected.length === 1 ? selected[0] : `${selected.length} ${label.toLowerCase()}s`;
+
+  return (
+    <div className="relative" ref={ref}>
+      <p className="text-xs text-ink-500 mb-1">{label}</p>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`w-full flex items-center justify-between gap-2 border rounded-md px-3 py-2 text-sm bg-white text-left ${
+          selected.length ? "border-brand-600 text-ink-900" : "border-ink-200 text-ink-600"
+        }`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="truncate">{summary}</span>
+        <span className="text-ink-400 text-xs" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 w-full min-w-[260px] bg-white border border-ink-100 rounded-lg shadow-xl">
+          <div className="p-2 border-b border-ink-100">
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder={`Search ${label.toLowerCase()}`}
+              className="w-full border border-ink-200 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:border-brand-600"
+            />
+            <div className="flex justify-between mt-1.5 text-xs">
+              <button
+                type="button"
+                onClick={() => onChange([...new Set([...selected, ...shown.map((o) => o.value)])])}
+                className="text-brand-600 hover:underline"
+              >
+                Select all{q ? " shown" : ""}
+              </button>
+              <button type="button" onClick={() => onChange([])} className="text-ink-500 hover:underline">
+                Clear
+              </button>
+            </div>
+          </div>
+          <ul className="max-h-64 overflow-y-auto py-1" role="listbox" aria-multiselectable="true">
+            {shown.map((o) => (
+              <li key={o.value}>
+                <label className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-ink-50 cursor-pointer">
+                  <input type="checkbox" checked={selected.includes(o.value)} onChange={() => toggle(o.value)} />
+                  <span className="flex-1 truncate">{o.value}</span>
+                  <span className="text-xs text-ink-400 tabular-nums">{o.count}</span>
+                </label>
+              </li>
+            ))}
+            {shown.length === 0 && <li className="px-3 py-3 text-sm text-ink-400">No matches.</li>}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ROUTE_FIELDS = [
+  ["origin", "Origin"],
+  ["destination", "Destination"],
+  ["vehicle_type", "Vehicle"],
+];
 
 export function AvailableRoutes() {
   const [routes, setRoutes] = useState(null);
-  const [search, setSearch] = useState("");
-  const [vehicle, setVehicle] = useState("");
-  const [onlyReady, setOnlyReady] = useState(false);
+  const [filters, setFilters] = useState({ origin: [], destination: [], vehicle_type: [] });
 
   useEffect(() => {
     fetch("/api/available-routes")
@@ -549,38 +628,54 @@ export function AvailableRoutes() {
       .then((d) => setRoutes(d.routes));
   }, []);
 
-  const vehicles = useMemo(() => [...new Set((routes || []).map((r) => r.vehicle_type))].sort(), [routes]);
-  if (!routes) return <p className="text-sm text-ink-400">Loading routes…</p>;
+  const passes = (r, skip) => ROUTE_FIELDS.every(([k]) => k === skip || !filters[k].length || filters[k].includes(r[k]));
 
-  const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const rows = routes
-    .filter((r) => !vehicle || r.vehicle_type === vehicle)
-    .filter((r) => !onlyReady || r.status === "ready")
-    .filter((r) => words.every((w) => `${r.origin} ${r.destination}`.toLowerCase().includes(w)))
-    .sort((a, b) => a.origin.localeCompare(b.origin) || a.destination.localeCompare(b.destination));
+  // Each filter offers the values still possible under the OTHER filters, with counts.
+  const optionsFor = (key) => {
+    const counts = new Map();
+    for (const r of routes || []) if (passes(r, key)) counts.set(r[key], (counts.get(r[key]) || 0) + 1);
+    for (const v of filters[key]) if (!counts.has(v)) counts.set(v, 0); // keep picked values visible
+    return [...counts.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => a.value.localeCompare(b.value));
+  };
+
+  if (!routes) return <p className="text-sm text-ink-400">Loading routes…</p>;
+  const rows = routes.filter((r) => passes(r, null));
+  const anyFilter = ROUTE_FIELDS.some(([k]) => filters[k].length);
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search origin or destination, e.g. bekasi surabaya"
-          className="flex-1 min-w-[240px] border border-ink-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600"
-        />
-        <select value={vehicle} onChange={(e) => setVehicle(e.target.value)} className="border border-ink-200 rounded-md px-2 py-2 text-sm bg-white">
-          <option value="">All vehicles</option>
-          {vehicles.map((v) => (
-            <option key={v} value={v}>
-              {v}
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-2 text-sm text-ink-700 px-2">
-          <input type="checkbox" checked={onlyReady} onChange={(e) => setOnlyReady(e.target.checked)} />
-          Ready to quote only
-        </label>
+      <div className="grid sm:grid-cols-3 gap-3 mb-3">
+        {ROUTE_FIELDS.map(([key, label]) => (
+          <MultiSelect
+            key={key}
+            label={label}
+            options={optionsFor(key)}
+            selected={filters[key]}
+            onChange={(v) => setFilters((f) => ({ ...f, [key]: v }))}
+          />
+        ))}
       </div>
+
+      {anyFilter && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          {ROUTE_FIELDS.flatMap(([key, label]) =>
+            filters[key].map((v) => (
+              <button
+                key={`${key}:${v}`}
+                onClick={() => setFilters((f) => ({ ...f, [key]: f[key].filter((x) => x !== v) }))}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 text-xs ring-1 ring-inset ring-brand-200"
+                title={`Remove ${label} filter`}
+              >
+                <span className="text-brand-700/70">{label}:</span> {v} <span aria-hidden="true">×</span>
+              </button>
+            ))
+          )}
+          <button onClick={() => setFilters({ origin: [], destination: [], vehicle_type: [] })} className="text-xs text-ink-500 hover:underline ml-1">
+            Clear all
+          </button>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-ink-50/60">
@@ -588,8 +683,6 @@ export function AvailableRoutes() {
               <th className="px-3 py-2.5 font-medium">Origin</th>
               <th className="px-3 py-2.5 font-medium">Destination</th>
               <th className="px-3 py-2.5 font-medium">Vehicle</th>
-              <th className="px-3 py-2.5 font-medium text-right">Price (no target)</th>
-              <th className="px-3 py-2.5 font-medium">Availability</th>
             </tr>
           </thead>
           <tbody>
@@ -598,23 +691,19 @@ export function AvailableRoutes() {
                 <td className="px-3 py-2.5">{r.origin}</td>
                 <td className="px-3 py-2.5">{r.destination}</td>
                 <td className="px-3 py-2.5 whitespace-nowrap">{r.vehicle_type}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{r.final_rate != null ? rp(r.final_rate) : "–"}</td>
-                <td className="px-3 py-2.5">
-                  {r.status === "ready" ? <Pill tone="ok">Ready to quote</Pill> : <Pill tone="warning">1 vendor · VM confirms</Pill>}
-                </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-10 text-center text-sm text-ink-400">
-                  No routes match. Raise a new request and VM will source it.
+                <td colSpan={3} className="px-3 py-10 text-center text-sm text-ink-400">
+                  No route matches. Raise a new request and VM will source it.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
         <p className="px-3 py-2 text-xs text-ink-400 border-t border-ink-100">
-          {rows.length} of {routes.length} routes with vendor rates on file. Prices use the standard rule (2nd-cheapest vendor + 11.1%); a target rate can change it.
+          {rows.length} of {routes.length} routes we have vendors for. Use Quick check or a new request for prices.
         </p>
       </div>
     </div>

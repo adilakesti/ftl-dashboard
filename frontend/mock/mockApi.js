@@ -221,9 +221,7 @@ export default function mockApi() {
           for (const t of tickets) {
             const k = `${t.origin}|${t.destination}|${t.vehicle_type}`;
             if (seen.has(k)) continue;
-            const c = t.ranked_vendors.map((v) => v.cost).sort((a, b) => a - b);
-            seen.set(k, { origin: t.origin, destination: t.destination, vehicle_type: t.vehicle_type,
-              status: c.length >= 2 ? "ready" : "single", final_rate: c.length >= 2 ? Math.round(c[1] * 1.111) : null });
+            seen.set(k, { origin: t.origin, destination: t.destination, vehicle_type: t.vehicle_type });
           }
           return json(res, 200, { routes: [...seen.values()] });
         }

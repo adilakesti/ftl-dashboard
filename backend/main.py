@@ -2770,7 +2770,8 @@ async def edit_lane(submission_id: int, row_id: int, body: LaneEdit, request: Re
 
 
 # ---------------------------------------------------------------------------
-# Available routes: which lanes have master rates — for sales, without vendor data.
+# Available routes: which OD + vehicle combinations we have vendor rates for. For
+# sales to know what we can serve; no price, vendor or vendor-count information.
 # ---------------------------------------------------------------------------
 
 
@@ -2778,9 +2779,6 @@ class AvailableRoute(BaseModel):
     origin: str
     destination: str
     vehicle_type: str
-    # "ready": 2+ vendors, priced instantly. "single": 1 vendor, VM must confirm.
-    status: str
-    final_rate: float | None = None  # what a request without target rate would quote
 
 
 class AvailableRouteList(BaseModel):
@@ -2789,29 +2787,15 @@ class AvailableRouteList(BaseModel):
 
 @app.get("/api/available-routes", response_model=AvailableRouteList)
 async def available_routes(request: Request):
-    """Every OD + vehicle with vendor rates on file, and the price a request without a
-    target rate would get (same rule as Quick Check). Vendor names and costs are never
-    returned."""
+    """Every OD + vehicle with at least one vendor rate on file. Only the lane itself is
+    returned: no price, no vendor names, no costs, no vendor counts."""
     await require_permission(request, "quickCheck")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, norm_origin, norm_destination, norm_vehicle_type,
-                      norm_vendor_name, cost
+            """SELECT MIN(origin), MIN(destination), MIN(vehicle_type)
                FROM vendor_rates
-               ORDER BY norm_origin, norm_destination, norm_vehicle_type"""
+               GROUP BY norm_origin, norm_destination, norm_vehicle_type
+               ORDER BY 1, 2, 3"""
         )
         rows = await cur.fetchall()
-    lanes: dict[tuple, dict] = {}
-    for o, d, v, no, nd, nv, vendor, cost in rows:
-        lane = lanes.setdefault((no, nd, nv), {"origin": o, "destination": d, "vehicle_type": v, "costs": {}})
-        lane["costs"][vendor] = float(cost)
-    routes = []
-    for lane in lanes.values():
-        result = pricing.compute_final_rate(lane["costs"], None)
-        routes.append(
-            AvailableRoute(
-                origin=lane["origin"], destination=lane["destination"], vehicle_type=lane["vehicle_type"],
-                status="single" if result.single_vendor else "ready", final_rate=result.final_rate,
-            )
-        )
-    return AvailableRouteList(routes=routes)
+    return AvailableRouteList(routes=[AvailableRoute(origin=o, destination=d, vehicle_type=v) for o, d, v in rows])

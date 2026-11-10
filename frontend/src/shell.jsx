@@ -75,7 +75,7 @@ const PAGE = {
   "new-request": ["New rate request", "Shipper details, then the lanes. Rates come back instantly where vendors exist."],
   "my-requests": ["My requests", "Your lanes and extra-service requests, and where each one stands."],
   "quick-check": ["Quick check", "Look up a lane's price without saving anything."],
-  "available-routes": ["Available Route", "Routes and trucks with vendor rates on file, and what they quote."],
+  "available-routes": ["Available Route", "Routes and trucks we have vendors for. Filter to see what you can sell."],
   dashboard: ["Dashboard Ticket", "Every raised ticket, newest first. Open one to see each OD pair and its status."],
   "vm-queue": ["VM queue", "Tickets with lanes waiting on vendor management or being worked on. SLA is 7 days per lane."],
   prioritization: ["Prioritization", "Lanes that keep coming back: worth a vendor push."],
