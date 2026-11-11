@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { L2_LOCATIONS, VEHICLE_TYPES, canonicalL2 } from "../l2Locations.js";
-import { Discussion, OD_REGIONS, STATUS_LABEL } from "../shared.jsx";
+import { Discussion, MARGIN_TIERS, OD_REGIONS, STATUS_LABEL } from "../shared.jsx";
 import { AgePill, StatTile, StatusBadge, isOpenStatus, rp } from "./Queue.jsx";
 import { OnlyOneVendorBadge, ResolveRequestPanel } from "./Vm.jsx";
 
@@ -287,7 +287,7 @@ function EditLaneRow({ row, ticketId, onSaved, onCancel }) {
       <td className="px-2 py-2 align-top">
         <input inputMode="numeric" value={f.min_trip} onChange={(e) => set("min_trip", e.target.value.replace(/[^0-9]/g, ""))} className={`${input} text-right w-20`} aria-label="Minimum trips" />
       </td>
-      <td colSpan={3} className="px-2 py-2 align-top">
+      <td colSpan={5} className="px-2 py-2 align-top">
         <div className="flex gap-2">
           <button onClick={save} disabled={saving} className="px-3 py-1.5 rounded-md text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
             {saving ? "Saving…" : "Save and re-price"}
@@ -302,6 +302,40 @@ function EditLaneRow({ row, ticketId, onSaved, onCancel }) {
   );
 }
 
+function TicketHistory({ ticketId, refreshKey }) {
+  const [events, setEvents] = useState(null);
+  useEffect(() => {
+    fetch(`/api/submissions/${ticketId}/history`)
+      .then((r) => (r.ok ? r.json() : { events: [] }))
+      .then((d) => setEvents(d.events));
+  }, [ticketId, refreshKey]);
+  const when = (at) => `${fmtDay(at)} ${String(at).slice(11, 16)}`;
+  return (
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+      <h3 className="font-semibold text-sm mb-3">Ticket History</h3>
+      {!events ? (
+        <p className="text-sm text-ink-400">Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="text-sm text-ink-400">Nothing yet.</p>
+      ) : (
+        <ol className="relative border-l border-ink-200 ml-1.5 space-y-3">
+          {[...events].reverse().map((e, i) => (
+            <li key={i} className="pl-4">
+              <span className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full bg-brand-600" aria-hidden="true" />
+              <p className="text-xs text-ink-500 tabular-nums">
+                {when(e.at)}
+                {e.actor ? ` · ${e.actor}` : ""}
+              </p>
+              <p className="text-sm font-medium text-ink-900">{e.stage}</p>
+              {e.detail && <p className="text-sm text-ink-600">{e.detail}</p>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
 export function TicketDetail({ ticketId, perms, me, onBack }) {
   const [detail, setDetail] = useState(null);
   const [reqs, setReqs] = useState([]);
@@ -310,7 +344,9 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
   const [feedbackFor, setFeedbackFor] = useState(null); // vm request id
   const [busyRow, setBusyRow] = useState(null);
 
+  const [historyKey, setHistoryKey] = useState(0);
   const load = () => {
+    setHistoryKey((k) => k + 1);
     fetch(`/api/submissions/${ticketId}`)
       .then(async (r) => (r.ok ? r.json() : Promise.reject((await r.json().catch(() => ({}))).detail || "Ticket not found")))
       .then(setDetail)
@@ -544,8 +580,18 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
                 <th className="px-3 py-2.5 font-medium">Vehicle</th>
                 <th className="px-3 py-2.5 font-medium text-right">Target rate</th>
                 <th className="px-3 py-2.5 font-medium text-right">Min. trips</th>
-                <th className="px-3 py-2.5 font-medium text-right">Final rate</th>
-                <th className="px-3 py-2.5 font-medium">Result</th>
+                <th className="px-3 py-2.5 font-medium text-right">Vendor cost</th>
+                <th className="px-3 py-2.5 font-medium text-right">Margin at target</th>
+                {MARGIN_TIERS.map((t) => (
+                  <th key={t.pct} className="px-3 py-2.5 font-medium text-right whitespace-nowrap">
+                    {t.pct}% margin
+                    <span className="block font-normal text-ink-400">
+                      {t.category ? `Cat ${t.category} · ` : ""}
+                      {t.approval}
+                    </span>
+                  </th>
+                ))}
+                <th className="px-3 py-2.5 font-medium">Status</th>
                 <th className="px-3 py-2.5 font-medium"></th>
               </tr>
             </thead>
@@ -568,6 +614,7 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
                   );
                 }
                 const finalRate = req?.current_final_rate ?? row.final_rate;
+                const pr = row.pricing;
                 return (
                   <tr key={row.id} className={`border-t border-ink-100 ${feedbackFor && req?.id === feedbackFor ? "bg-brand-50" : ""}`}>
                     <td className="px-3 py-2.5 text-ink-400 text-xs">{row.idx}</td>
@@ -576,14 +623,46 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
                     <td className="px-3 py-2.5 whitespace-nowrap">{row.vehicle_type}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{row.target_rate != null ? rp(row.target_rate) : "–"}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{row.min_trip ?? "–"}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap font-medium">
-                      {finalRate != null ? rp(finalRate) : <span className="text-ink-400 font-normal">–</span>}
+                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
+                      {pr ? rp(pr.basis_cost) : <span className="text-ink-400">–</span>}
                       {perms.seeVendorData && (req?.resolved_vendor || row.matched_vendor) && (
-                        <p className="text-xs text-ink-500 font-normal">{req?.resolved_vendor || row.matched_vendor}</p>
+                        <p className="text-xs text-ink-500">{req?.resolved_vendor || row.matched_vendor}</p>
                       )}
                     </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
+                      {pr?.margin_at_target != null ? (
+                        <span className={pr.margin_at_target < 5 ? "text-red-600" : ""}>
+                          {pr.margin_at_target.toFixed(1)}%
+                          <span className="block text-xs text-ink-500">Cat {pr.target_category}</span>
+                        </span>
+                      ) : (
+                        <span className="text-ink-400">–</span>
+                      )}
+                    </td>
+                    {MARGIN_TIERS.map((t) => {
+                      const tier = pr?.tiers.find((x) => x.margin_pct === t.pct);
+                      const suggested = tier && finalRate != null && tier.price === finalRate;
+                      const overTarget = tier && row.target_rate != null && tier.price > row.target_rate;
+                      return (
+                        <td key={t.pct} className="px-2 py-2 text-right tabular-nums whitespace-nowrap">
+                          {tier ? (
+                            <span
+                              className={`inline-block px-2 py-1 rounded-md ${
+                                suggested ? "bg-emerald-50 ring-1 ring-emerald-300 font-semibold text-emerald-800" : overTarget ? "text-ink-400" : ""
+                              }`}
+                              title={suggested ? "Suggested rate" : overTarget ? "Above the target rate" : undefined}
+                            >
+                              {rp(tier.price)}
+                            </span>
+                          ) : (
+                            <span className="text-ink-400">–</span>
+                          )}
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-2.5">
                       <LaneResult row={row} req={req} />
+                      {!pr && !req && <p className="text-xs text-ink-500 mt-1">VM sets this rate</p>}
                     </td>
                     <td className="px-3 py-2.5 whitespace-nowrap">
                       <div className="flex items-center gap-2 justify-end">
@@ -646,8 +725,17 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
         )}
       </div>
 
-      <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 mt-5 max-w-3xl">
-        <Discussion endpoint={`/api/submissions/${s.id}/comments`} />
+      <p className="text-xs text-ink-500 mt-2">
+        Vendor cost = 2nd-cheapest active vendor (or the rate VM set). Prices = cost ÷ (1 − margin), rounded up to Rp 100,
+        before PPN, overnight, TKBM and extra drop points. Highlighted = suggested rate: the highest margin that still meets
+        the target, or 15% when there's no target.
+      </p>
+
+      <div className="grid lg:grid-cols-2 gap-5 mt-5 items-start">
+        <TicketHistory ticketId={s.id} refreshKey={historyKey} />
+        <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+          <Discussion endpoint={`/api/submissions/${s.id}/comments`} />
+        </div>
       </div>
     </div>
   );

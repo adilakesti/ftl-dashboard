@@ -207,12 +207,32 @@ def _snapshot(result) -> tuple[str | None, str | None]:
     return result.basis, ranked_json
 
 
-async def _system_comment(cur, submission_id: int, message: str) -> None:
-    """Automatic note in a shipper's Discussion. Never triggers @mention notifications."""
+async def _event(cur, submission_id: int | None, stage: str, detail: str | None = None, actor: str | None = None) -> None:
+    """One line of a ticket's history (date, stage, by whom). Never in the Discussion."""
+    if not submission_id:
+        return
     await cur.execute(
-        "INSERT INTO submission_comments (submission_id, author_email, message) VALUES (%s, %s, %s)",
-        (submission_id, SYSTEM_AUTHOR, message),
+        "INSERT INTO ticket_events (submission_id, stage, detail, actor) VALUES (%s, %s, %s, %s)",
+        (submission_id, stage[:64], (detail or None) and detail[:1000], actor),
     )
+
+
+async def _system_comment(cur, submission_id: int, message: str, stage: str = "Update", actor: str | None = None) -> None:
+    """Automatic note about a ticket. Goes to its history (it used to be posted in the
+    Discussion as "system")."""
+    await _event(cur, submission_id, stage, message, actor)
+
+
+async def _submission_of_row(cur, row_id: int | None) -> int | None:
+    if not row_id:
+        return None
+    await cur.execute("SELECT submission_id FROM submission_rows WHERE id = %s", (row_id,))
+    r = await cur.fetchone()
+    return r[0] if r else None
+
+
+def _lane_label(origin: str, destination: str, vehicle: str) -> str:
+    return f"{origin} → {destination} ({vehicle})"
 
 
 def _idr(n: float) -> str:
@@ -236,6 +256,9 @@ class SubmissionRow(BaseModel):
     min_trip: int | None = None
     raised_to_vm: bool = False
     needs_vm: bool = False
+    # Cost basis (2nd-cheapest active vendor, or the one VM set), margin at target and
+    # the 5/10/15% prices. Visible to every role; vendor NAMES stay VM-only.
+    pricing: dict | None = None
 
 
 class AddOn(BaseModel):
@@ -558,7 +581,10 @@ async def upload_submission(
                     ),
                     min_trip=row["min_trip"],
                     raised_to_vm=False,
-                    needs_vm=result.single_vendor,
+                    needs_vm=result.final_rate is None,
+                    pricing=pricing.lane_pricing(
+                        result.matched_cost if result.final_rate is not None else None, row["target_rate"]
+                    ),
                 )
             )
 
@@ -620,7 +646,8 @@ async def _load_submission_detail(
         """SELECT id, origin, destination, vehicle_type, target_rate, final_rate,
                   remarks, matched_vendor, min_trip,
                   EXISTS(SELECT 1 FROM vm_requests vr WHERE vr.submission_row_id = submission_rows.id
-                         AND vr.status IN ('open', 'in_progress'))
+                         AND vr.status IN ('open', 'in_progress')),
+                  matched_cost
            FROM submission_rows WHERE submission_id = %s ORDER BY id""",
         (submission_id,),
     )
@@ -639,7 +666,11 @@ async def _load_submission_detail(
                 matched_vendor=r[7] if show_vendor else None,
                 min_trip=r[8],
                 raised_to_vm=bool(r[9]),
-                needs_vm=r[5] is None and r[6] == pricing.REMARK_PENDING_VM and not r[9],
+                needs_vm=r[5] is None and not r[9],
+                pricing=pricing.lane_pricing(
+                    float(r[10]) if r[10] is not None and r[5] is not None else None,
+                    float(r[4]) if r[4] is not None else None,
+                ),
             )
             for r in rows
         ],
@@ -702,9 +733,10 @@ async def submit_submission(submission_id: int, body: SubmitIn, request: Request
         if not asked <= row_ids:
             raise HTTPException(400, "Unknown lane in the selection")
 
+        sent = []
         for row_id, origin, destination, vehicle, target, final_rate, remarks in rows:
-            needs_vm = final_rate is None and remarks == pricing.REMARK_PENDING_VM
-            if row_id in asked or needs_vm:
+            # Anything without a price goes to VM; priced lanes only if sales asked.
+            if row_id in asked or final_rate is None:
                 await cur.execute(
                     """INSERT INTO vm_requests
                        (submission_row_id, origin, destination, vehicle_type, target_rate,
@@ -712,11 +744,12 @@ async def submit_submission(submission_id: int, body: SubmitIn, request: Request
                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (row_id, origin, destination, vehicle, target, final_rate, email),
                 )
-            elif final_rate is None:
-                await cur.execute(
-                    "UPDATE submission_rows SET remarks = 'Not requested' WHERE id = %s", (row_id,)
-                )
+                sent.append(_lane_label(origin, destination, vehicle) + (" (lower rate)" if final_rate is not None else ""))
         await _assign_ticket_number(cur, submission_id)
+        priced = len(rows) - sum(1 for r in rows if r[5] is None)
+        await _event(cur, submission_id, "Raised", f"{len(rows)} lane(s); {priced} priced automatically.", email)
+        if sent:
+            await _event(cur, submission_id, "Sent to VM", "; ".join(sent), email)
         return await _load_submission_detail(cur, submission_id, email)
 
 
@@ -847,7 +880,7 @@ def _to_vm_request(r, lane_counts: dict | None = None) -> VmRequest:
         vehicle_type=r[3],
         target_rate=target_rate,
         target_cost=(
-            round(target_rate / (1 + (float(r[29]) if r[29] is not None else pricing.MARGIN_PCT_STANDARD) / 100), 2)
+            round(target_rate * (1 - pricing.FLOOR_PCT / 100), 2)
             if target_rate is not None
             else None
         ),
@@ -899,11 +932,11 @@ def _for_viewer(req: VmRequest, role: str | None) -> VmRequest:
     may not see vendor data (sales). Keeps the ticket itself fully readable."""
     if permissions.can(role, "seeVendorData"):
         return req
+    # Sales sees the cost basis and margins (Michael, 2026-11-11) but never vendor
+    # names, the vendor ranking or how many vendors a lane has.
     return req.model_copy(
         update={
             "resolved_vendor": None,
-            "resolved_cost": None,
-            "target_cost": None,
             "vendor_count": None,
             "winner_basis": None,
             "ranked_vendors": [],
@@ -976,7 +1009,7 @@ class VmRequestUpdate(BaseModel):
 
 @app.patch("/api/vm/requests/{request_id}", response_model=VmRequest)
 async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Request):
-    await require_role(request, "vm")
+    email = await require_role(request, "vm")
     if body.status is not None and body.status not in VM_STATUSES:
         raise HTTPException(400, "Invalid status")
 
@@ -998,6 +1031,16 @@ async def update_vm_request(request_id: int, body: VmRequestUpdate, request: Req
         if fields:
             values.append(request_id)
             await cur.execute(f"UPDATE vm_requests SET {', '.join(fields)} WHERE id = %s", values)
+            if body.status is not None:
+                await cur.execute(
+                    "SELECT origin, destination, vehicle_type, submission_row_id FROM vm_requests WHERE id = %s",
+                    (request_id,),
+                )
+                o, d, v, row_id = await cur.fetchone()
+                await _event(
+                    cur, await _submission_of_row(cur, row_id), "Status: " + body.status.replace("_", " ").title(),
+                    _lane_label(o, d, v), email,
+                )
 
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
@@ -1026,9 +1069,16 @@ async def _fetch_vm_request_raw(cur, request_id: int):
     }
 
 
-async def _store_resolution(cur, request_id: int, row_id: int | None, result) -> None:
+async def _store_resolution(cur, request_id: int, row_id: int | None, result, actor: str | None = None) -> None:
     """Persist a priced result on the ticket and on the sales row it came from."""
     basis, ranked_json = _snapshot(result)
+    await cur.execute("SELECT origin, destination, vehicle_type FROM vm_requests WHERE id = %s", (request_id,))
+    lane = await cur.fetchone()
+    if lane:
+        await _event(
+            cur, await _submission_of_row(cur, row_id), "Rate set",
+            f"{_lane_label(*lane)}: {_idr(result.final_rate)} ({result.remarks}).", actor,
+        )
     await cur.execute(
         """UPDATE vm_requests SET status = 'resolved', resolved_vendor = %s, resolved_cost = %s,
            current_final_rate = %s WHERE id = %s""",
@@ -1076,7 +1126,7 @@ async def _apply_resolution(request_id: int, vendor_costs: list[tuple[str, float
 
     async with pool.acquire() as conn, conn.cursor() as cur:
         if result.final_rate is not None:
-            await _store_resolution(cur, request_id, req["submission_row_id"], result)
+            await _store_resolution(cur, request_id, req["submission_row_id"], result, resolved_by)
         else:
             # Still fewer than 2 vendors: the ticket stays open (flagged for VM), now in progress.
             await cur.execute(
@@ -1122,7 +1172,7 @@ async def _auto_resolve_matching(pool, lane_keys: set[tuple[str, str, str]], res
             if result.final_rate is None:
                 await _store_ranked_only(cur, submission_row_id, result)
                 continue
-            await _store_resolution(cur, req_id, submission_row_id, result)
+            await _store_resolution(cur, req_id, submission_row_id, result, resolved_by)
         resolved += 1
     return resolved
 
@@ -1203,7 +1253,7 @@ async def use_single_vendor(request_id: int, body: SingleVendorIn, request: Requ
     result = pricing.compute_final_rate(costs, req["target_rate"], allow_single=True)
 
     async with pool.acquire() as conn, conn.cursor() as cur:
-        await _store_resolution(cur, request_id, req["submission_row_id"], result)
+        await _store_resolution(cur, request_id, req["submission_row_id"], result, email)
         await cur.execute(
             """UPDATE vm_requests SET single_vendor_approved = 1, override_reason = %s, override_by = %s
                WHERE id = %s""",
@@ -1219,6 +1269,8 @@ async def use_single_vendor(request_id: int, body: SingleVendorIn, request: Requ
                     f"{email} approved using the single vendor for {req['origin']} → {req['destination']} "
                     f"({req['vehicle_type']}): {result.matched_vendor} at {_idr(result.matched_cost)}. "
                     f"Reason: {reason}.",
+                    stage="Single vendor used",
+                    actor=email,
                 )
         await cur.execute(f"{VM_REQUEST_SELECT_FROM} WHERE vr.id = %s", (request_id,))
         row = await cur.fetchone()
@@ -1237,12 +1289,17 @@ async def close_vm_request_no_vendor(request_id: int, request: Request):
         close as closed_no_lower_rate, and leave the existing Final Rate
         on the submission row untouched — sales still has a usable rate,
         it just didn't get any cheaper."""
-    await require_role(request, "vm")
+    email = await require_role(request, "vm")
     pool = db.pool()
     async with pool.acquire() as conn, conn.cursor() as cur:
         req = await _fetch_vm_request_raw(cur, request_id)
         had_rate = req["current_final_rate"] is not None
         new_status = "closed_no_lower_rate" if had_rate else "closed_no_vendor"
+        await _event(
+            cur, await _submission_of_row(cur, req["submission_row_id"]),
+            "Closed: no lower rate" if had_rate else "Closed: no vendor",
+            _lane_label(req["origin"], req["destination"], req["vehicle_type"]), email,
+        )
 
         if had_rate:
             await cur.execute(
@@ -1760,8 +1817,8 @@ async def list_submission_comments(submission_id: int, request: Request):
             raise HTTPException(404, "Submission not found")
         await cur.execute(
             "SELECT id, submission_id, author_email, message, created_at FROM submission_comments "
-            "WHERE submission_id = %s ORDER BY created_at ASC",
-            (submission_id,),
+            "WHERE submission_id = %s AND author_email <> %s ORDER BY created_at ASC",
+            (submission_id, SYSTEM_AUTHOR),
         )
         rows = await cur.fetchall()
     return SubmissionCommentList(
@@ -2069,7 +2126,7 @@ async def quick_check(
         available=available,
         final_rate=result.final_rate,
         winners=[
-            QuickWinner(rank=i + 1, price=round(cost * pricing.MARGIN_STANDARD, 2))
+            QuickWinner(rank=i + 1, price=pricing.tier_price(cost, pricing.DEFAULT_PCT))
             for i, (_, cost) in enumerate(result.ranked[:3])
         ]
         if available
@@ -2147,8 +2204,8 @@ async def run_sla_sweep() -> int:
             await _system_comment(
                 cur,
                 submission_id,
-                f"Auto-closed by SLA after {SLA_DAYS} days with no VM action — "
-                + "; ".join(lines),
+                f"After {SLA_DAYS} days with no VM action: " + "; ".join(lines),
+                stage="Auto-closed (SLA)",
             )
     return count
 
@@ -2831,7 +2888,9 @@ async def edit_lane(submission_id: int, row_id: int, body: LaneEdit, request: Re
                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (row_id, origin, destination, vehicle, body.target_rate, result.final_rate, email),
             )
-        await _system_comment(cur, submission_id, f"{email} edited a lane: {origin} → {destination} ({vehicle}).")
+        await _system_comment(
+            cur, submission_id, f"{_lane_label(origin, destination, vehicle)}: {result.remarks}", stage="Lane edited", actor=email
+        )
         detail = await _load_submission_detail(cur, submission_id, email, permissions.can(role, "seeVendorData"))
         editable = await _ticket_editable(cur, submission_id, email)
         number = await _ticket_no_of(cur, submission_id)
@@ -2922,7 +2981,7 @@ async def mark_ticket_live(submission_id: int, request: Request):
         await cur.execute(
             "UPDATE submissions SET went_live_at = NOW(), went_live_by = %s WHERE id = %s", (email, submission_id)
         )
-        await _system_comment(cur, submission_id, f"{email} marked this ticket as live.")
+        await _system_comment(cur, submission_id, "Shipper marked live.", stage="Went live", actor=email)
 
 
 @app.delete("/api/tickets/{submission_id}/go-live", status_code=204)
@@ -2935,7 +2994,7 @@ async def unmark_ticket_live(submission_id: int, request: Request):
             (submission_id,),
         )
         if cur.rowcount:
-            await _system_comment(cur, submission_id, f"{email} moved this ticket back from live.")
+            await _system_comment(cur, submission_id, "Moved back from live.", stage="Live undone", actor=email)
 
 
 # ---------------------------------------------------------------------------
@@ -3033,4 +3092,48 @@ async def set_salescrm_id(submission_id: int, body: SalesCrmIdIn, request: Reque
         if row[0] != email and role != "superadmin":
             raise HTTPException(403, "Only the person who raised this ticket can change its SalesCRM ID")
         await cur.execute("UPDATE submissions SET salescrm_id = %s WHERE id = %s", (value, submission_id))
+
+
+# ---------------------------------------------------------------------------
+# Ticket history: date, stage, by whom
+# ---------------------------------------------------------------------------
+
+
+class TicketEvent(BaseModel):
+    at: str
+    stage: str
+    detail: str | None = None
+    actor: str | None = None
+
+
+class TicketEventList(BaseModel):
+    events: list[TicketEvent]
+
+
+@app.get("/api/submissions/{submission_id}/history", response_model=TicketEventList)
+async def ticket_history(submission_id: int, request: Request):
+    """Everything that happened to a ticket, oldest first. Includes the automatic notes
+    older tickets had in their Discussion, and a "Raised" line for tickets submitted
+    before the history existed."""
+    await require_permission(request, "viewSubmissions")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT submitted_at, uploaded_by FROM submissions WHERE id = %s AND submitted_at IS NOT NULL", (submission_id,)
+        )
+        sub = await cur.fetchone()
+        if not sub:
+            raise HTTPException(404, "Ticket not found")
+        await cur.execute(
+            "SELECT created_at, stage, detail, actor FROM ticket_events WHERE submission_id = %s", (submission_id,)
+        )
+        events = [TicketEvent(at=str(r[0]), stage=r[1], detail=r[2], actor=r[3]) for r in await cur.fetchall()]
+        await cur.execute(
+            "SELECT created_at, message FROM submission_comments WHERE submission_id = %s AND author_email = %s",
+            (submission_id, SYSTEM_AUTHOR),
+        )
+        events += [TicketEvent(at=str(r[0]), stage="Update", detail=r[1]) for r in await cur.fetchall()]
+    if not any(e.stage == "Raised" for e in events):
+        events.append(TicketEvent(at=str(sub[0]), stage="Raised", actor=sub[1]))
+    events.sort(key=lambda e: e.at)
+    return TicketEventList(events=events)
 

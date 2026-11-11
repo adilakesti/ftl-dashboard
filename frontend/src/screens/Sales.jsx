@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { L2_LOCATIONS, canonicalL2, VEHICLE_TYPES } from "../l2Locations.js";
-import { DEFAULT_ADD_ONS_STATE, DEFAULT_SHIPPER_FORM, Discussion, OD_REGIONS, FilterBar, RATE_REQUEST_TEMPLATE_URL, SERVICES, Td, Th, buildAddOns, fmt, idr, matchesFilters, useDirectoryUsers, userLabel } from "../shared.jsx";
+import { DEFAULT_ADD_ONS_STATE, DEFAULT_SHIPPER_FORM, Discussion, OD_REGIONS, FilterBar, RATE_REQUEST_TEMPLATE_URL, SERVICES, Td, Th, buildAddOns, fmt, idr, matchesFilters, useDirectoryUsers, userLabel, MARGIN_TIERS, categoryFor, marginOnPrice, tierPrice } from "../shared.jsx";
 
 export const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
@@ -204,54 +204,52 @@ export function parseCsvPreview(text) {
 // Sales: Quick Check (lane price lookup, nothing saved) + price calculator
 // ---------------------------------------------------------------------------
 
-export const CALC_MARGIN = 0.1; // 10% margin on the selling price (not a markup on cost)
-export const CALC_PPN = 1.11;
-
 export function PriceCalculator() {
   const [cost, setCost] = useState("");
-  const [withPpn, setWithPpn] = useState(false);
+  const [target, setTarget] = useState("");
   const c = Number(String(cost).replace(/[^0-9]/g, "")) || 0;
-  const beforePpn = c / (1 - CALC_MARGIN);
-  const price = withPpn ? beforePpn * CALC_PPN : beforePpn;
+  const t = Number(String(target).replace(/[^0-9]/g, "")) || 0;
+  const mAtTarget = c > 0 && t > 0 ? marginOnPrice(t, c) : null;
 
   return (
     <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
-      <h2 className="font-semibold mb-1">Kalkulator harga (cost dari procurement)</h2>
-      <p className="text-xs text-ink-400 mb-3">
-        Harga = Cost ÷ (1 − 10%). Margin 10% dari harga jual, bukan mark up dari cost.
+      <h2 className="font-semibold mb-1">Price Calculator</h2>
+      <p className="text-xs text-ink-500 mb-3">
+        Price = cost ÷ (1 − margin), rounded up to Rp 100. Margin is on the selling price. Before PPN, overnight, TKBM
+        and extra drop points.
       </p>
       <div className="flex flex-wrap items-end gap-4">
         <div>
-          <label className="text-xs text-ink-500">Cost (IDR)</label>
-          <input
-            className="mt-1 w-48 border border-ink-200 rounded px-2 py-1.5 text-sm"
-            placeholder="mis. 3.000.000"
-            value={cost}
-            onChange={(e) => setCost(e.target.value)}
-          />
+          <label className="text-xs text-ink-500">Vendor cost (IDR)</label>
+          <input className="mt-1 w-48 border border-ink-200 rounded px-2 py-1.5 text-sm" placeholder="e.g. 3.000.000" value={cost} onChange={(e) => setCost(e.target.value)} />
         </div>
-        <label className="flex items-center gap-2 text-sm pb-2">
-          <input type="checkbox" checked={withPpn} onChange={(e) => setWithPpn(e.target.checked)} />
-          Include PPN 11%
-        </label>
+        <div>
+          <label className="text-xs text-ink-500">Target rate (optional)</label>
+          <input className="mt-1 w-48 border border-ink-200 rounded px-2 py-1.5 text-sm" placeholder="e.g. 3.500.000" value={target} onChange={(e) => setTarget(e.target.value)} />
+        </div>
       </div>
       {c > 0 && (
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          <div className="rounded-lg border-2 border-brand-500 bg-brand-50 p-3">
-            <div className="text-xs text-ink-500">Harga jual{withPpn ? " (incl. PPN 11%)" : ""}</div>
-            <div className="text-xl font-bold text-brand-700">{idr(Math.round(price))}</div>
-          </div>
+        <div className="mt-4 grid sm:grid-cols-4 gap-3">
           <div className="rounded-lg border border-ink-100 p-3">
-            <div className="text-xs text-ink-500">Keuntungan</div>
-            <div className="text-lg font-semibold">{idr(Math.round(beforePpn - c))}</div>
+            <div className="text-xs text-ink-500">Margin at target</div>
+            <div className="text-lg font-semibold">
+              {mAtTarget == null ? "–" : `${mAtTarget.toFixed(1)}%`}
+              {mAtTarget != null && <span className="text-xs text-ink-500 font-normal"> · Cat {categoryFor(mAtTarget)}</span>}
+            </div>
           </div>
-          <div className="rounded-lg border border-ink-100 p-3">
-            <div className="text-xs text-ink-500">Margin</div>
-            <div className="text-lg font-semibold">10%</div>
-          </div>
-          <p className="col-span-3 text-sm rounded border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2">
-            Harga ini sudah batas bawah. Kalau mau di bawah harga ini, harus tanya ke PSP dulu.
-          </p>
+          {MARGIN_TIERS.map((tier) => {
+            const price = tierPrice(c, tier.pct);
+            const meets = t > 0 && price <= t;
+            return (
+              <div key={tier.pct} className={`rounded-lg p-3 ${meets ? "border-2 border-emerald-500 bg-emerald-50" : "border border-ink-100"}`}>
+                <div className="text-xs text-ink-500">
+                  {tier.pct}% margin{tier.category ? ` · Cat ${tier.category}` : ""}
+                </div>
+                <div className="text-lg font-semibold tabular-nums">{idr(price)}</div>
+                <div className="text-xs text-ink-500">{tier.approval}</div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -387,8 +385,8 @@ export function QuickCheck({ onRequest }) {
                 })}
               </div>
               <p className="text-xs text-ink-500 mt-2">
-                Final rate memakai 2nd winner (vendor termurah ke-2) + margin 11,1% (termasuk PPN). Semua angka sudah harga
-                jual.
+                Final rate uses the 2nd-cheapest vendor at 15% margin (Cat 1), rounded up to Rp 100, before PPN and
+                extra services. Prices at 5% / 10% need approval from Alex / Head.
               </p>
             </div>
           ) : (

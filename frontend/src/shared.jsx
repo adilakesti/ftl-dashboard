@@ -355,3 +355,15 @@ export function Discussion({ endpoint, id }) {
     </div>
   );
 }
+
+// Pricing tiers — mirrors backend/pricing.py. Margin ON PRICE, rounded up to Rp 100
+// (Excel ROUNDUP(x, -2)), before PPN and before overnight / TKBM / extra drops.
+export const MARGIN_TIERS = [
+  { pct: 5, approval: "Approval Alex", category: null },
+  { pct: 10, approval: "Approval Head", category: 2 },
+  { pct: 15, approval: "Approval Manager", category: 1 },
+];
+export const roundup100 = (x) => Math.ceil(Math.round(x * 1e6) / 1e6 / 100) * 100;
+export const tierPrice = (cost, pct) => roundup100(cost / (1 - pct / 100));
+export const marginOnPrice = (price, cost) => (price ? Math.round(((price - cost) / price) * 10000) / 100 : null);
+export const categoryFor = (m) => (m == null ? null : m >= 15 ? 1 : m >= 10 ? 2 : 3);

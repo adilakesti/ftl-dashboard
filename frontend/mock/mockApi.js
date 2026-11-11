@@ -124,11 +124,30 @@ function mockRates() {
 
 const ticketNo = (id) => `FTL-${String(id).padStart(6, "0")}`;
 
+const up100 = (x) => Math.ceil(x / 100) * 100;
+function lanePricing(r, t) {
+  const costs = (t?.ranked_vendors || []).map((v) => v.cost).sort((a, b) => a - b);
+  const cost = t?.resolved_cost ?? (costs.length >= 2 ? costs[1] : null);
+  if (cost == null || (r.final_rate == null && t?.current_final_rate == null)) return null;
+  const m = r.target_rate ? Math.round(((r.target_rate - cost) / r.target_rate) * 10000) / 100 : null;
+  return {
+    basis_cost: cost, target_rate: r.target_rate, margin_at_target: m,
+    target_category: m == null ? null : m >= 15 ? 1 : m >= 10 ? 2 : 3,
+    tiers: [[5, "Approval Alex", null], [10, "Approval Head", 2], [15, "Approval Manager", 1]].map(([pct, approval, category]) => ({
+      margin_pct: pct, approval, category, price: up100(cost / (1 - pct / 100)) })),
+  };
+}
+
 function detailOf(s, P, me) {
   const ts = tickets.filter((t) => t.submission_id === s.id);
   return {
     submission: s,
-    rows: rows[s.id].map((r) => (P.seeVendorData ? r : { ...r, matched_vendor: null })),
+    rows: rows[s.id].map((r) => {
+      const t = ts.find((x) => x.submission_row_id === r.id);
+      const pricing = lanePricing(r, t);
+      const final_rate = pricing ? (r.target_rate ? ([...pricing.tiers].reverse().find((x) => x.price <= r.target_rate) || pricing.tiers[0]).price : pricing.tiers[2].price) : null;
+      return { ...r, final_rate, pricing, matched_vendor: P.seeVendorData ? r.matched_vendor : null };
+    }),
     ticket_no: ticketNo(s.id),
     editable: !!P.createRequest && s.uploaded_by === me && ts.every((t) => t.status === "open"),
   };
@@ -322,6 +341,18 @@ export default function mockApi() {
           return json(res, 200, { comments: comments[sid] || [] });
         }
         if ((mm = p.match(/^\/api\/vm-requests\/(\d+)\/comments$/))) return json(res, 200, { comments: [] });
+        if ((mm = p.match(/^\/api\/submissions\/(\d+)\/history$/))) {
+          const s = submissions.find((x) => x.id === Number(mm[1]));
+          if (!s) return json(res, 404, { detail: "Ticket not found" });
+          const ts = tickets.filter((t) => t.submission_id === s.id);
+          const ev = [
+            { at: s.submitted_at, stage: "Raised", detail: `${rows[s.id].length} lane(s); 2 priced automatically.`, actor: s.uploaded_by },
+            { at: s.submitted_at, stage: "Sent to VM", detail: ts.slice(0, 3).map((t) => `${t.origin} → ${t.destination} (${t.vehicle_type})`).join("; "), actor: s.uploaded_by },
+            ...ts.filter((t) => t.status !== "open").map((t) => ({ at: daysAgo(Math.max(0, t.aging_days - 1)), stage: t.status === "resolved" ? "Rate set" : "Status: " + t.status.replace(/_/g, " "), detail: `${t.origin} → ${t.destination} (${t.vehicle_type})`, actor: "baskoro@ninjavan.co" })),
+          ];
+          if (s.went_live_at) ev.push({ at: s.went_live_at, stage: "Went live", detail: "Shipper marked live.", actor: s.went_live_by });
+          return json(res, 200, { events: ev.sort((a, b) => String(a.at).localeCompare(String(b.at))) });
+        }
         if (p === "/api/lanes") {
           const mine = submissions.filter((s) => s.uploaded_by === me);
           return json(res, 200, { lanes: mine.flatMap((s) => rows[s.id].map((r) => {
