@@ -267,6 +267,14 @@ class Submission(BaseModel):
     commodity_type: str | None = None
     high_value_fragile: bool = False
     add_ons: list[AddOn] = []
+    od_region: str | None = None
+    went_live_at: str | None = None
+    went_live_by: str | None = None
+
+
+# OD Region sales pick when raising a ticket: the Java regions, or the island for
+# lanes outside Java.
+OD_REGIONS = ("CJ", "EJ", "GJ", "WJ", "Sumatra", "Kalimantan", "Sulawesi", "Bali-Nusa", "Papua-Maluku")
 
 
 class SubmissionList(BaseModel):
@@ -413,12 +421,16 @@ def _row_to_submission(r) -> Submission:
         add_ons=add_ons,
         sales_email=r[11],
         submitted_at=str(r[12]) if r[12] else None,
+        od_region=r[13],
+        went_live_at=str(r[14]) if r[14] else None,
+        went_live_by=r[15],
     )
 
 
 SUBMISSION_COLUMNS = (
     "id, uploaded_by, filename, created_at, shipper_name, sales_pic, shipper_status, "
-    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, submitted_at"
+    "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, submitted_at, "
+    "od_region, went_live_at, went_live_by"
 )
 
 
@@ -434,8 +446,12 @@ async def upload_submission(
     high_value_fragile: bool = Form(False),
     add_ons_json: str | None = Form(None),
     sales_email: str | None = Form(None),
+    od_region: str | None = Form(None),
 ):
     email = await require_role(request, "sales")
+    od_region = (od_region or "").strip() or None
+    if od_region is not None and od_region not in OD_REGIONS:
+        raise HTTPException(400, f"OD Region must be one of {', '.join(OD_REGIONS)}")
     _, role = await current_user(request)
     sales_email = (sales_email or "").strip().lower() or None
     if sales_email:
@@ -473,8 +489,8 @@ async def upload_submission(
         await cur.execute(
             """INSERT INTO submissions
                (uploaded_by, filename, shipper_name, sales_pic, shipper_status,
-                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, od_region)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 email,
                 file.filename,
@@ -486,6 +502,7 @@ async def upload_submission(
                 high_value_fragile,
                 json.dumps(add_ons_list) if add_ons_list else None,
                 sales_email,
+                od_region,
             ),
         )
         submission_id = cur.lastrowid
@@ -2627,6 +2644,10 @@ class TicketSummary(BaseModel):
     vm_working_count: int  # lanes VM marked in progress
     oldest_open_days: int | None = None
     editable: bool = False
+    od_region: str | None = None
+    potential_monthly_revenue: float | None = None
+    went_live_at: str | None = None
+    went_live_by: str | None = None
 
 
 class TicketSummaryList(BaseModel):
@@ -2661,7 +2682,7 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
                        s.commodity_type, s.add_ons,
                        a.lanes, a.vehicles, a.with_target, a.priced,
                        COALESCE(v.vm_open, 0), COALESCE(v.vm_working, 0), v.oldest_open, COALESCE(v.vm_started, 0),
-                       s.ticket_seq
+                       s.ticket_seq, s.od_region, s.potential_monthly_revenue, s.went_live_at, s.went_live_by
                 FROM submissions s
                 JOIN (SELECT submission_id, COUNT(*) lanes,
                              GROUP_CONCAT(DISTINCT vehicle_type ORDER BY vehicle_type SEPARATOR '|') vehicles,
@@ -2693,6 +2714,10 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
                 vm_open_count=int(r[12]), vm_working_count=int(r[13]),
                 oldest_open_days=max(0, (now - oldest.replace(tzinfo=None)).days) if oldest else None,
                 editable=can_edit and r[5] == email and int(r[15]) == 0,
+                od_region=r[17],
+                potential_monthly_revenue=float(r[18]) if r[18] is not None else None,
+                went_live_at=str(r[19]) if r[19] else None,
+                went_live_by=r[20],
             )
         )
     return TicketSummaryList(tickets=tickets)
@@ -2799,3 +2824,72 @@ async def available_routes(request: Request):
         )
         rows = await cur.fetchall()
     return AvailableRouteList(routes=[AvailableRoute(origin=o, destination=d, vehicle_type=v) for o, d, v in rows])
+
+
+# ---------------------------------------------------------------------------
+# OD Region edits and Go-live (both per ticket)
+# ---------------------------------------------------------------------------
+
+
+class OdRegionIn(BaseModel):
+    od_region: str
+
+
+@app.put("/api/submissions/{submission_id}/od-region", status_code=204)
+async def set_od_region(submission_id: int, body: OdRegionIn, request: Request):
+    """The salesperson who raised a ticket (or a superadmin) sets its OD Region."""
+    email, role = await require_permission(request, "viewSubmissions")
+    region = body.od_region.strip()
+    if region not in OD_REGIONS:
+        raise HTTPException(400, f"OD Region must be one of {', '.join(OD_REGIONS)}")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT uploaded_by FROM submissions WHERE id = %s AND submitted_at IS NOT NULL", (submission_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Ticket not found")
+        if row[0] != email and role != "superadmin":
+            raise HTTPException(403, "Only the person who raised this ticket can change its OD Region")
+        await cur.execute("UPDATE submissions SET od_region = %s WHERE id = %s", (region, submission_id))
+
+
+@app.post("/api/tickets/{submission_id}/go-live", status_code=204)
+async def mark_ticket_live(submission_id: int, request: Request):
+    """Mark a ticket's shipper as live. Allowed once no lane is waiting on VM and at
+    least one lane has a final rate."""
+    email, _ = await require_permission(request, "confirmGoLive")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """SELECT s.went_live_at,
+                      (SELECT COUNT(*) FROM submission_rows r WHERE r.submission_id = s.id AND r.final_rate IS NOT NULL),
+                      (SELECT COUNT(*) FROM vm_requests vr JOIN submission_rows r ON vr.submission_row_id = r.id
+                       WHERE r.submission_id = s.id AND vr.status IN ('open', 'in_progress'))
+               FROM submissions s WHERE s.id = %s AND s.submitted_at IS NOT NULL""",
+            (submission_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Ticket not found")
+        if row[0] is not None:
+            raise HTTPException(400, "This ticket is already live")
+        if int(row[2]) > 0:
+            raise HTTPException(400, "Some lanes are still waiting on VM")
+        if int(row[1]) == 0:
+            raise HTTPException(400, "No lane on this ticket has a final rate yet")
+        await cur.execute(
+            "UPDATE submissions SET went_live_at = NOW(), went_live_by = %s WHERE id = %s", (email, submission_id)
+        )
+        await _system_comment(cur, submission_id, f"{email} marked this ticket as live.")
+
+
+@app.delete("/api/tickets/{submission_id}/go-live", status_code=204)
+async def unmark_ticket_live(submission_id: int, request: Request):
+    """Undo a go-live (marked by mistake)."""
+    email, _ = await require_permission(request, "confirmGoLive")
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE submissions SET went_live_at = NULL, went_live_by = NULL WHERE id = %s AND went_live_at IS NOT NULL",
+            (submission_id,),
+        )
+        if cur.rowcount:
+            await _system_comment(cur, submission_id, f"{email} moved this ticket back from live.")
+

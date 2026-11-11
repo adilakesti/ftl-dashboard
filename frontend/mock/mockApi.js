@@ -55,6 +55,8 @@ const submissions = SHIPPERS.map(([name, email, pic, commodity], i) => ({
   shipper_status: i % 2 ? "existing" : "new", potential_monthly_revenue: (i + 2) * 150_000_000,
   commodity_type: commodity, high_value_fragile: i === 1,
   add_ons: i % 2 ? [{ label: "Overnight", value: "2 nights max", service: "overnight" }] : [],
+  od_region: ["GJ", "EJ", "WJ", "CJ", "Kalimantan"][i],
+  went_live_at: null, went_live_by: null,
 }));
 
 const tickets = [];
@@ -64,7 +66,7 @@ submissions.forEach((s, si) => {
   for (let k = 0; k < 5; k++) {
     const [o, d, v] = LANES[(si * 3 + k) % LANES.length];
     const cost = 3_000_000 + ((si * 7 + k * 13) % 17) * 600_000;
-    const status = si === 3 ? "open" : STATUSES[(si * 5 + k) % STATUSES.length];
+    const status = si === 3 ? "open" : si === 4 ? (k % 2 ? "resolved" : "closed_no_lower_rate") : STATUSES[(si * 5 + k) % STATUSES.length];
     const age = [9, 6, 5, 2, 1, 8, 3, 0, 4][(si + k) % 9];
     const ranked = VENDORS.slice(0, 1 + ((si + k) % 4)).map((vn, j) => ({ vendor: vn, cost: cost + j * 250_000 }));
     const target = k % 3 ? Math.round(cost * 1.05) : null;
@@ -93,6 +95,9 @@ submissions.forEach((s, si) => {
     });
   }
 });
+
+submissions[1].went_live_at = daysAgo(2);
+submissions[1].went_live_by = "fajar@ninjavan.co";
 
 const comments = { 100: [{ id: 1, submission_id: 100, author_email: "baskoro@ninjavan.co", message: "@Dewi checking Balikpapan with Duta Trans today.", created_at: daysAgo(1) }] };
 
@@ -179,6 +184,7 @@ export default function mockApi() {
         const P = perms(effRole);
         const me = AS[realRole];
         const deny = () => json(res, 403, { detail: "Not allowed" });
+        let mm;
 
         if (p === "/api/__mock/role") { role = url.searchParams.get("as") || role; return json(res, 200, { role }); }
         if (p === "/api/me") return json(res, 200, { email: me, role: effRole, permissions: P, real_role: realRole, view_as_options: realRole === "superadmin" ? VIEW_AS_ROLES : [], mock: true });
@@ -209,11 +215,28 @@ export default function mockApi() {
                 vm_open_count: open.length, vm_working_count: open.filter((t) => t.status === "in_progress").length,
                 oldest_open_days: open.length ? Math.max(...open.map((t) => t.aging_days)) : null,
                 editable: P.createRequest && s.uploaded_by === me && ts.every((t) => t.status === "open"),
+                od_region: s.od_region, potential_monthly_revenue: s.potential_monthly_revenue,
+                went_live_at: s.went_live_at, went_live_by: s.went_live_by,
               };
             })
             .filter((t) => !vmOnly || t.vm_open_count > 0)
             .sort((a, b) => String(b.raised_at).localeCompare(String(a.raised_at)));
           return json(res, 200, { tickets: board });
+        }
+        if ((mm = p.match(/^\/api\/tickets\/(\d+)\/go-live$/))) {
+          if (!P.confirmGoLive) return deny();
+          const s = submissions.find((x) => x.id === Number(mm[1]));
+          if (!s) return json(res, 404, { detail: "Ticket not found" });
+          const open = tickets.some((t) => t.submission_id === s.id && (t.status === "open" || t.status === "in_progress"));
+          if (m === "POST" && open) return json(res, 400, { detail: "Some lanes are still waiting on VM" });
+          Object.assign(s, m === "POST" ? { went_live_at: daysAgo(0), went_live_by: me } : { went_live_at: null, went_live_by: null });
+          return json(res, 204);
+        }
+        if ((mm = p.match(/^\/api\/submissions\/(\d+)\/od-region$/)) && m === "PUT") {
+          const s = submissions.find((x) => x.id === Number(mm[1]));
+          if (!s) return json(res, 404, { detail: "Ticket not found" });
+          s.od_region = (await readBody(req)).od_region;
+          return json(res, 204);
         }
         if (p === "/api/available-routes") {
           if (!P.quickCheck) return deny();
@@ -243,7 +266,6 @@ export default function mockApi() {
           if (!P.createRequest) return deny();
           return json(res, 200, { submissions: submissions.filter((s) => s.uploaded_by === me).reverse() });
         }
-        let mm;
         if ((mm = p.match(/^\/api\/submissions\/(\d+)$/)) && m === "GET") {
           const s = submissions.find((x) => x.id === Number(mm[1]));
           if (!s) return json(res, 404, { detail: "Submission not found" });

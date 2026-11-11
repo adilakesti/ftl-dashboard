@@ -87,7 +87,21 @@ export const DEFAULT_SHIPPER_FORM = {
   potential_monthly_revenue: "",
   commodity_type: "",
   high_value_fragile: false,
+  od_region: "",
 };
+
+// OD Region sales pick when raising a ticket: Java regions, or the island outside Java.
+export const OD_REGIONS = [
+  { value: "GJ", label: "GJ (Greater Jakarta)" },
+  { value: "WJ", label: "WJ (West Java)" },
+  { value: "CJ", label: "CJ (Central Java)" },
+  { value: "EJ", label: "EJ (East Java)" },
+  { value: "Sumatra", label: "Sumatra" },
+  { value: "Kalimantan", label: "Kalimantan" },
+  { value: "Sulawesi", label: "Sulawesi" },
+  { value: "Bali-Nusa", label: "Bali-Nusa" },
+  { value: "Papua-Maluku", label: "Papua-Maluku" },
+];
 
 // Additional services sales can ask VM to price (sent as one request on Submit).
 export const SERVICES = [

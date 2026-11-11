@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AdminPanel } from "./screens/Admin.jsx";
 import { Overview } from "./screens/Overview.jsx";
-import { ProfitabilityView } from "./screens/Profitability.jsx";
 import { SalesView } from "./screens/Sales.jsx";
-import { AvailableRoutes, TicketBoard, TicketDetail } from "./screens/Tickets.jsx";
+import { AvailableRoutes, GoLive, TicketBoard, TicketDetail } from "./screens/Tickets.jsx";
 import { MasterRatesPanel, PrioritizationScreen, ServicesScreen } from "./screens/Vm.jsx";
 import { useDirectoryUsers, useMe, userLabel } from "./shared.jsx";
 import { getViewAs, setViewAs } from "./viewAs.js";
@@ -66,7 +65,7 @@ const NAV = [
       { id: "rates", label: "Master vendor rates", icon: "database", when: (p) => p.manageRates },
     ],
   ],
-  ["After go-live", [{ id: "profitability", label: "Profitability", icon: "chart", when: (p) => p.viewProfitability }]],
+  ["After deal", [{ id: "go-live", label: "Go-live", icon: "chart", when: (p) => p.viewQueue }]],
   ["Admin", [{ id: "users", label: "Users and roles", icon: "users", when: (p) => p.manageUsers }]],
 ];
 
@@ -81,7 +80,7 @@ const PAGE = {
   prioritization: ["Prioritization", "Lanes that keep coming back: worth a vendor push."],
   services: ["Extra services", "Overnight, TKBM and extra drop-point prices sales asked for."],
   rates: ["Master vendor rates", "Upload or check the vendor cost list every price is computed from."],
-  profitability: ["Profitability", "Shippers that went live: quoted vs. actual, per order."],
+  "go-live": ["Go-live", "Shippers that went live, and tickets ready to be marked live."],
   users: ["Users and roles", "Who can sign in, and as what."],
 };
 
@@ -100,7 +99,7 @@ function permissionsFromRole(role) {
 const visibleNav = (perms) =>
   NAV.map(([group, items]) => [group, items.filter((i) => i.when(perms))]).filter(([, items]) => items.length);
 
-const SCREEN_ALIASES = { queue: "dashboard", submissions: "dashboard" }; // old links keep working
+const SCREEN_ALIASES = { queue: "dashboard", submissions: "dashboard", profitability: "go-live" }; // old links keep working
 
 function screenFromUrl(allowed) {
   const params = new URLSearchParams(window.location.search);
@@ -458,7 +457,7 @@ export function AppInner() {
             )}
             {(screen === "dashboard" || screen === "vm-queue") &&
               (screenArgs.ticket ? (
-                <TicketDetail ticketId={screenArgs.ticket} perms={perms} onBack={() => navigate(screen)} />
+                <TicketDetail ticketId={screenArgs.ticket} perms={perms} me={me} onBack={() => navigate(screen)} />
               ) : (
                 <TicketBoard
                   key={screen}
@@ -471,7 +470,7 @@ export function AppInner() {
             {screen === "prioritization" && <PrioritizationScreen />}
             {screen === "services" && <ServicesScreen canEdit={!!perms.workTickets} />}
             {screen === "rates" && <MasterRatesPanel />}
-            {screen === "profitability" && <ProfitabilityView me={{ ...me, permissions: perms }} />}
+            {screen === "go-live" && <GoLive perms={perms} onOpen={(id) => navigate("dashboard", { ticket: id })} />}
             {screen === "users" && <AdminPanel />}
           </div>
         </main>

@@ -87,3 +87,7 @@ other person pushed anything new; before any push, show the latest commits on `m
 `screens/*.jsx`. Who sees what is decided only in `backend/permissions.py`; the menu
 reads it from `/api/me`. `npm run dev:mock` previews the UI with sample data and a
 role switch, no backend needed.
+
+**Planned: SalesCRM API.** Shipper name, Sales PIC and potential monthly revenue will
+later come from the SalesCRM API — only those three fields; everything else (OD Region,
+commodity, lanes, add-ons) stays entered in FTL. Until then they're typed in New request.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { L2_LOCATIONS, VEHICLE_TYPES, canonicalL2 } from "../l2Locations.js";
-import { Discussion, STATUS_LABEL } from "../shared.jsx";
+import { Discussion, OD_REGIONS, STATUS_LABEL } from "../shared.jsx";
 import { AgePill, StatTile, StatusBadge, isOpenStatus, rp } from "./Queue.jsx";
 import { OnlyOneVendorBadge, ResolveRequestPanel } from "./Vm.jsx";
 
@@ -11,6 +11,7 @@ import { OnlyOneVendorBadge, ResolveRequestPanel } from "./Vm.jsx";
 export const ticketNo = (id) => `FTL-${String(id).padStart(6, "0")}`;
 
 function ticketState(t) {
+  if (t.went_live_at) return { label: "Live", tone: "live" };
   if (t.vm_working_count > 0) return { label: `VM working · ${t.vm_open_count}`, tone: "warning" };
   if (t.vm_open_count > 0) return { label: `Waiting on VM · ${t.vm_open_count}`, tone: "info" };
   return { label: "Complete", tone: "ok" };
@@ -22,6 +23,7 @@ const PILL = {
   ok: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   neutral: "bg-ink-50 text-ink-600 ring-ink-200",
   danger: "bg-red-50 text-red-700 ring-red-200",
+  live: "bg-violet-50 text-violet-700 ring-violet-200",
 };
 
 function Pill({ tone = "neutral", children }) {
@@ -32,7 +34,11 @@ function Pill({ tone = "neutral", children }) {
   );
 }
 
-const fmtDate = (s) => (s ? String(s).slice(0, 16).replace("T", " ") : "–");
+// Dates as DD-MM-YYYY (no time).
+export const fmtDay = (s) => {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : "–";
+};
 
 // ---------------------------------------------------------------------------
 // Ticket list (Dashboard Ticket and VM queue)
@@ -56,11 +62,19 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
     if (!tickets) return [];
     const q = search.trim().toLowerCase();
     const list = tickets
-      .filter((t) => (stateFilter === "vm" ? t.vm_open_count > 0 : stateFilter === "done" ? t.vm_open_count === 0 : true))
+      .filter((t) =>
+        stateFilter === "vm"
+          ? t.vm_open_count > 0
+          : stateFilter === "done"
+            ? t.vm_open_count === 0 && !t.went_live_at
+            : stateFilter === "live"
+              ? !!t.went_live_at
+              : true
+      )
       .filter(
         (t) =>
           !q ||
-          [t.ticket_no, t.shipper_name, t.sales_pic, t.raised_by, ...t.vehicles].filter(Boolean).join(" ").toLowerCase().includes(q)
+          [t.ticket_no, t.shipper_name, t.sales_pic, t.raised_by, t.od_region, ...t.vehicles].filter(Boolean).join(" ").toLowerCase().includes(q)
       );
     const sorters = {
       newest: (a, b) => String(b.raised_at).localeCompare(String(a.raised_at)) || b.id - a.id,
@@ -81,14 +95,16 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
         <StatTile label={mode === "vm" ? "Tickets in VM queue" : "Tickets raised"} value={tickets.length} onClick={() => setStateFilter("all")} active={stateFilter === "all"} />
         <StatTile label="Need VM" value={needVm} tone={needVm ? "warning" : undefined} onClick={() => setStateFilter("vm")} active={stateFilter === "vm"} />
         <StatTile label="Lanes waiting on VM" value={lanesWaiting} />
-        {mode !== "vm" && <StatTile label="Complete" value={tickets.length - needVm} onClick={() => setStateFilter("done")} active={stateFilter === "done"} />}
+        {mode !== "vm" && (
+          <StatTile label="Live" value={tickets.filter((t) => t.went_live_at).length} onClick={() => setStateFilter("live")} active={stateFilter === "live"} />
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search ticket no., shipper, sales, vehicle"
+          placeholder="Search ticket no., shipper, sales, region, vehicle"
           className="flex-1 min-w-[220px] border border-ink-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600"
         />
         {mode !== "vm" && (
@@ -97,6 +113,7 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
               ["all", "All"],
               ["vm", "Need VM"],
               ["done", "Complete"],
+              ["live", "Live"],
             ].map(([k, l]) => (
               <button
                 key={k}
@@ -122,6 +139,9 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
               <th className="px-3 py-2.5 font-medium">Ticket no.</th>
               <th className="px-3 py-2.5 font-medium">Raised</th>
               <th className="px-3 py-2.5 font-medium">Shipper</th>
+              <th className="px-3 py-2.5 font-medium">OD Region</th>
+              <th className="px-3 py-2.5 font-medium">Sales PIC</th>
+              <th className="px-3 py-2.5 font-medium text-right">Potential / month</th>
               <th className="px-3 py-2.5 font-medium text-right">Lanes</th>
               <th className="px-3 py-2.5 font-medium">Vehicles</th>
               <th className="px-3 py-2.5 font-medium">Target rate</th>
@@ -134,14 +154,14 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
               return (
                 <tr key={t.id} onClick={() => onOpen(t.id)} className="border-t border-ink-100 cursor-pointer hover:bg-ink-50">
                   <td className="px-3 py-2.5 font-medium text-brand-700 whitespace-nowrap tabular-nums">{t.ticket_no}</td>
-                  <td className="px-3 py-2.5 whitespace-nowrap text-ink-600 tabular-nums">{fmtDate(t.raised_at)}</td>
-                  <td className="px-3 py-2.5 max-w-[240px]">
+                  <td className="px-3 py-2.5 whitespace-nowrap text-ink-600 tabular-nums">{fmtDay(t.raised_at)}</td>
+                  <td className="px-3 py-2.5 max-w-[220px]">
                     <p className="font-medium text-ink-900 truncate">{t.shipper_name || "–"}</p>
-                    <p className="text-xs text-ink-500 truncate">
-                      {t.sales_pic || t.raised_by}
-                      {t.editable && <span className="ml-1.5 text-brand-700">· editable</span>}
-                    </p>
+                    {t.editable && <p className="text-xs text-brand-700">editable</p>}
                   </td>
+                  <td className="px-3 py-2.5 whitespace-nowrap">{t.od_region || <span className="text-ink-400">–</span>}</td>
+                  <td className="px-3 py-2.5 max-w-[160px] truncate">{t.sales_pic || t.raised_by}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{rp(t.potential_monthly_revenue)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{t.lane_count}</td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1 max-w-[220px]">
@@ -156,7 +176,7 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1.5">
                       <Pill tone={st.tone}>{st.label}</Pill>
-                      {t.oldest_open_days != null && <AgePill t={{ status: "open", aging_days: t.oldest_open_days }} />}
+                      {t.oldest_open_days != null && !t.went_live_at && <AgePill t={{ status: "open", aging_days: t.oldest_open_days }} />}
                     </div>
                   </td>
                 </tr>
@@ -164,7 +184,7 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-10 text-center text-sm text-ink-400">
+                <td colSpan={10} className="px-3 py-10 text-center text-sm text-ink-400">
                   {mode === "vm" ? "Nothing waiting on VM." : "No tickets match."}
                 </td>
               </tr>
@@ -282,7 +302,7 @@ function EditLaneRow({ row, ticketId, onSaved, onCancel }) {
   );
 }
 
-export function TicketDetail({ ticketId, perms, onBack }) {
+export function TicketDetail({ ticketId, perms, me, onBack }) {
   const [detail, setDetail] = useState(null);
   const [reqs, setReqs] = useState([]);
   const [error, setError] = useState(null);
@@ -330,6 +350,29 @@ export function TicketDetail({ ticketId, perms, onBack }) {
   const rows = detail.rows.map((r, i) => ({ ...r, idx: i + 1 }));
   const feedbackReq = reqs.find((r) => r.id === feedbackFor);
   const openCount = rows.filter((r) => reqByRow[r.id] && isOpenStatus(reqByRow[r.id].status)).length;
+
+  const canSetRegion = (me && me.email === s.uploaded_by) || perms.manageUsers;
+  const pricedCount = rows.filter((r) => (reqByRow[r.id]?.current_final_rate ?? r.final_rate) != null).length;
+  const liveBlocker = openCount > 0 ? "Some lanes are still waiting on VM" : pricedCount === 0 ? "No lane has a final rate yet" : null;
+
+  const setRegion = async (od_region) => {
+    const res = await fetch(`/api/submissions/${s.id}/od-region`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ od_region }),
+    });
+    if (res.ok) load();
+  };
+
+  const setLive = async (live) => {
+    if (!live && !window.confirm("Move this ticket back from live?")) return;
+    const res = await fetch(`/api/tickets/${s.id}/go-live`, { method: live ? "POST" : "DELETE" });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      window.alert(b.detail || "Couldn't update go-live.");
+    }
+    load();
+  };
 
   const setStatus = async (req, status) => {
     await fetch(`/api/vm/requests/${req.id}`, {
@@ -387,7 +430,27 @@ export function TicketDetail({ ticketId, perms, onBack }) {
           </div>
           <div>
             <p className="text-xs text-ink-500">Raised</p>
-            <p className="tabular-nums">{fmtDate(s.submitted_at || s.created_at)}</p>
+            <p className="tabular-nums">{fmtDay(s.submitted_at || s.created_at)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-500">OD Region</p>
+            {canSetRegion ? (
+              <select
+                value={s.od_region || ""}
+                onChange={(e) => e.target.value && setRegion(e.target.value)}
+                className="mt-0.5 border border-ink-200 rounded-md px-2 py-1 text-sm bg-white"
+                aria-label="OD Region"
+              >
+                <option value="">Select…</option>
+                {OD_REGIONS.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.value}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p>{s.od_region || "–"}</p>
+            )}
           </div>
           <div>
             <p className="text-xs text-ink-500">Commodity</p>
@@ -410,7 +473,32 @@ export function TicketDetail({ ticketId, perms, onBack }) {
         <div className="flex flex-wrap gap-2 mt-3">
           <Pill tone={openCount ? "warning" : "ok"}>{openCount ? `${openCount} lane${openCount > 1 ? "s" : ""} waiting on VM` : "No lanes waiting on VM"}</Pill>
           {detail.editable && <Pill tone="info">You can edit lanes until VM starts on this ticket</Pill>}
+          {s.went_live_at && (
+            <Pill tone="live">
+              Live since {fmtDay(s.went_live_at)}
+              {s.went_live_by ? ` · ${s.went_live_by}` : ""}
+            </Pill>
+          )}
+          <span className="flex-1" />
+          {perms.confirmGoLive && !s.went_live_at && (
+            <button
+              onClick={() => setLive(true)}
+              disabled={!!liveBlocker}
+              title={liveBlocker || "Mark this shipper as live"}
+              className="px-3 py-1.5 rounded-md text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Mark as live
+            </button>
+          )}
+          {perms.confirmGoLive && s.went_live_at && (
+            <button onClick={() => setLive(false)} className="px-3 py-1.5 rounded-md text-sm border border-ink-200 hover:bg-ink-50">
+              Undo live
+            </button>
+          )}
         </div>
+        {perms.confirmGoLive && !s.went_live_at && liveBlocker && (
+          <p className="text-xs text-ink-500 mt-1.5 text-right">Can't go live yet: {liveBlocker}.</p>
+        )}
       </div>
 
       <div className="flex gap-5 items-start">
@@ -529,6 +617,122 @@ export function TicketDetail({ ticketId, perms, onBack }) {
       <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 mt-5 max-w-3xl">
         <Discussion endpoint={`/api/submissions/${s.id}/comments`} />
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Go-live: the shippers that went live, and the tickets ready to be marked live
+// ---------------------------------------------------------------------------
+
+export function GoLive({ perms, onOpen }) {
+  const [tickets, setTickets] = useState(null);
+  const [search, setSearch] = useState("");
+  const [busy, setBusy] = useState(null);
+
+  const load = () =>
+    fetch("/api/ticket-board")
+      .then((r) => (r.ok ? r.json() : { tickets: [] }))
+      .then((d) => setTickets(d.tickets));
+  useEffect(() => {
+    load();
+  }, []);
+
+  if (!tickets) return <p className="text-sm text-ink-400">Loading…</p>;
+  const q = search.trim().toLowerCase();
+  const match = (t) =>
+    !q || [t.ticket_no, t.shipper_name, t.sales_pic, t.od_region].filter(Boolean).join(" ").toLowerCase().includes(q);
+  const live = tickets.filter((t) => t.went_live_at && match(t)).sort((a, b) => String(b.went_live_at).localeCompare(String(a.went_live_at)));
+  const ready = tickets.filter((t) => !t.went_live_at && t.vm_open_count === 0 && t.priced_count > 0 && match(t));
+
+  const markLive = async (t) => {
+    setBusy(t.id);
+    const res = await fetch(`/api/tickets/${t.id}/go-live`, { method: "POST" });
+    setBusy(null);
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      window.alert(b.detail || "Couldn't mark live.");
+    }
+    load();
+  };
+
+  const row = (t, kind) => (
+    <tr key={t.id} onClick={() => onOpen(t.id)} className="border-t border-ink-100 cursor-pointer hover:bg-ink-50">
+      <td className="px-3 py-2.5 font-medium text-brand-700 tabular-nums whitespace-nowrap">{t.ticket_no}</td>
+      <td className="px-3 py-2.5 font-medium">{t.shipper_name || "–"}</td>
+      <td className="px-3 py-2.5">{t.od_region || "–"}</td>
+      <td className="px-3 py-2.5">{t.sales_pic || t.raised_by}</td>
+      <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{rp(t.potential_monthly_revenue)}</td>
+      <td className="px-3 py-2.5 tabular-nums whitespace-nowrap">
+        {kind === "live" ? (
+          <>
+            {fmtDay(t.went_live_at)}
+            {t.went_live_by && <span className="block text-xs text-ink-500">{t.went_live_by}</span>}
+          </>
+        ) : (
+          fmtDay(t.raised_at)
+        )}
+      </td>
+      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+        {kind === "ready" && perms.confirmGoLive && (
+          <button
+            onClick={() => markLive(t)}
+            disabled={busy === t.id}
+            className="px-2.5 py-1 rounded-md text-xs font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50"
+          >
+            Mark as live
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+  const table = (list, kind, empty) => (
+    <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-ink-50/60">
+          <tr className="text-left text-xs text-ink-500">
+            {["Ticket no.", "Shipper", "OD Region", "Sales PIC", "Potential / month", kind === "live" ? "Live since" : "Raised", ""].map((h, i) => (
+              <th key={i} className={`px-3 py-2.5 font-medium ${i === 4 ? "text-right" : ""}`}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((t) => row(t, kind))}
+          {list.length === 0 && (
+            <tr>
+              <td colSpan={7} className="px-3 py-8 text-center text-sm text-ink-400">
+                {empty}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search ticket no., shipper, sales PIC, region"
+        className="w-full max-w-md border border-ink-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600"
+      />
+      <section>
+        <h2 className="text-sm font-semibold text-ink-900 mb-2">
+          Live shippers <span className="text-ink-400 font-normal">({live.length})</span>
+        </h2>
+        {table(live, "live", "No shipper is live yet.")}
+      </section>
+      <section>
+        <h2 className="text-sm font-semibold text-ink-900 mb-1">
+          Ready to go live <span className="text-ink-400 font-normal">({ready.length})</span>
+        </h2>
+        <p className="text-xs text-ink-500 mb-2">Tickets with no lane waiting on VM and at least one final rate. You can also mark a ticket live from its page in Dashboard Ticket.</p>
+        {table(ready, "ready", "Nothing ready yet.")}
+      </section>
     </div>
   );
 }

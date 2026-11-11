@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { L2_LOCATIONS, canonicalL2, VEHICLE_TYPES } from "../l2Locations.js";
-import { DEFAULT_ADD_ONS_STATE, DEFAULT_SHIPPER_FORM, Discussion, FilterBar, RATE_REQUEST_TEMPLATE_URL, SERVICES, Td, Th, buildAddOns, fmt, idr, matchesFilters, useDirectoryUsers, userLabel } from "../shared.jsx";
+import { DEFAULT_ADD_ONS_STATE, DEFAULT_SHIPPER_FORM, Discussion, OD_REGIONS, FilterBar, RATE_REQUEST_TEMPLATE_URL, SERVICES, Td, Th, buildAddOns, fmt, idr, matchesFilters, useDirectoryUsers, userLabel } from "../shared.jsx";
 
 export const UNKNOWN_SHIPPER_SALES = "Ad-hoc / unknown shipper";
 
@@ -565,8 +565,8 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
   };
 
   const checkResult = async () => {
-    if (!shipperForm.shipper_name.trim() || !shipperForm.sales_email) {
-      setError("Shipper Name and Sales PIC are required");
+    if (!shipperForm.shipper_name.trim() || !shipperForm.sales_email || !shipperForm.od_region) {
+      setError("Shipper Name, Sales PIC and OD Region are required");
       return;
     }
     if (uploadMode === "csv" && !file) {
@@ -600,6 +600,7 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
       form.append("potential_monthly_revenue", shipperForm.potential_monthly_revenue);
       form.append("commodity_type", shipperForm.commodity_type);
       form.append("high_value_fragile", shipperForm.high_value_fragile ? "true" : "false");
+      form.append("od_region", shipperForm.od_region);
       form.append("add_ons_json", JSON.stringify(selectedAddOns));
 
       const res = await fetch("/api/submissions/upload", { method: "POST", body: form });
@@ -822,6 +823,21 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
                       {salesUsers.map((u) => (
                         <option key={u.email} value={u.email}>
                           {userLabel(u)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-ink-500">OD Region *</label>
+                    <select
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.od_region}
+                      onChange={(e) => setShipperForm((f) => ({ ...f, od_region: e.target.value }))}
+                    >
+                      <option value="">Select region…</option>
+                      {OD_REGIONS.map((r) => (
+                        <option key={r.value} value={r.value}>
+                          {r.label}
                         </option>
                       ))}
                     </select>
