@@ -39,9 +39,9 @@ export const RATE_REQUEST_TEMPLATE_CSV =
 export const RATE_REQUEST_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(RATE_REQUEST_TEMPLATE_CSV);
 
 export const MASTER_RATE_TEMPLATE_CSV =
-  "Origin L2,Destinasi L2,Vehicle Type,Cost/Rate,Vendor Name\n" +
-  "Kab. Bekasi,Kota Surabaya,CDE,6500000,Duta Trans\n" +
-  "Kab. Bekasi,Kota Surabaya,CDE,6800000,Seryu\n";
+  "Origin L2,Destinasi L2,Vehicle Type,Cost/Rate,Vendor Name,Valid Until\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,6500000,Duta Trans,31-12-2026\n" +
+  "Kab. Bekasi,Kota Surabaya,CDE,6800000,Seryu,\n";
 export const MASTER_RATE_TEMPLATE_URL = "data:text/csv;charset=utf-8," + encodeURIComponent(MASTER_RATE_TEMPLATE_CSV);
 
 export const STATUS_LABEL = {

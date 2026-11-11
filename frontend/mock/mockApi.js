@@ -101,6 +101,26 @@ submissions[1].went_live_by = "fajar@ninjavan.co";
 
 const comments = { 100: [{ id: 1, submission_id: 100, author_email: "baskoro@ninjavan.co", message: "@Dewi checking Balikpapan with Duta Trans today.", created_at: daysAgo(1) }] };
 
+let _rates = null;
+function mockRates() {
+  if (!_rates) {
+    let id = 1;
+    const seen = new Set();
+    _rates = [];
+    for (const t of tickets)
+      for (const r of t.ranked_vendors) {
+        const k = `${t.origin}|${t.destination}|${t.vehicle_type}|${r.vendor}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        _rates.push({ id: id++, origin: t.origin, destination: t.destination, vehicle_type: t.vehicle_type, vendor_name: r.vendor, cost: r.cost,
+          updated_by: "baskoro@ninjavan.co", updated_at: daysAgo(4), valid_until: id % 7 === 0 ? daysAgo(3).slice(0, 10) : null,
+          revoked_at: id % 11 === 0 ? daysAgo(1) : null, revoked_by: id % 11 === 0 ? "baskoro@ninjavan.co" : null,
+          revoke_reason: id % 11 === 0 ? "Vendor stopped serving this lane" : null });
+      }
+  }
+  return _rates;
+}
+
 const ticketNo = (id) => `FTL-${String(id).padStart(6, "0")}`;
 
 function detailOf(s, P, me) {
@@ -319,7 +339,24 @@ export default function mockApi() {
           if (!P.manageRates) return deny();
           if (p.endsWith("/meta")) return json(res, 200, { uploaded_by: "baskoro@ninjavan.co", filename: "vendor_rates_nov.csv", row_count: 412, created_at: daysAgo(4) });
           if (p.endsWith("/vendors")) return json(res, 200, { vendors: VENDORS });
-          return json(res, 200, { rates: tickets.flatMap((t) => t.ranked_vendors.map((r) => ({ origin: t.origin, destination: t.destination, vehicle_type: t.vehicle_type, vendor_name: r.vendor, cost: r.cost, updated_by: "baskoro@ninjavan.co", updated_at: daysAgo(4) }))) });
+          if (m === "POST") {
+            const b = await readBody(req);
+            const ids = new Set(b.ids || []);
+            if (!ids.size) return json(res, 400, { detail: "Pick at least one rate" });
+            for (const r of mockRates()) {
+              if (!ids.has(r.id)) continue;
+              if (p.endsWith("/revoke")) {
+                if (!String(b.reason || "").trim()) return json(res, 400, { detail: "A reason is required" });
+                Object.assign(r, { revoked_at: daysAgo(0), revoked_by: me, revoke_reason: b.reason });
+              } else if (p.endsWith("/restore")) Object.assign(r, { revoked_at: null, revoked_by: null, revoke_reason: null });
+              else if (p.endsWith("/valid-until")) r.valid_until = b.valid_until || null;
+            }
+            return json(res, 200, { changed_lanes: ids.size });
+          }
+          const today = daysAgo(0).slice(0, 10);
+          return json(res, 200, {
+            rates: mockRates().map((r) => ({ ...r, status: r.revoked_at ? "revoked" : r.valid_until && r.valid_until < today ? "expired" : "active" })),
+          });
         }
 
         if (p === "/api/profitability/candidates") return json(res, 200, { shippers: submissions.filter((s) => !live.includes(s.shipper_name)).slice(0, 2).map((s) => ({ shipper_name: s.shipper_name, sales_email: s.sales_email, sales_pic: s.sales_pic, lane_count: 5, priced_lane_count: 3, last_submitted_at: s.submitted_at })) });

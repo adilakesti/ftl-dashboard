@@ -218,6 +218,27 @@
         "responses": { "204": {"description": "No Content"} }
       }
     },
+    "/api/master-rates/revoke": {
+      "post": {
+        "summary": "VM/procurement: stop using vendor rates for pricing (kept for history, with reason). Quotes already given keep their final rate.",
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["ids", "reason"], "properties": {"ids": {"type": "array", "items": {"type": "integer"}}, "reason": {"type": "string"}}}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RateChangeResult"}}}}, "400": {"description": "No ids or no reason"} }
+      }
+    },
+    "/api/master-rates/restore": {
+      "post": {
+        "summary": "VM/procurement: undo a revoke; open tickets on those lanes are re-checked and priced where possible.",
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["ids"], "properties": {"ids": {"type": "array", "items": {"type": "integer"}}}}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RateChangeResult"}}}} }
+      }
+    },
+    "/api/master-rates/valid-until": {
+      "post": {
+        "summary": "VM/procurement: set (or clear with null) the date after which rates stop being used for pricing. DD-MM-YYYY or YYYY-MM-DD.",
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["ids"], "properties": {"ids": {"type": "array", "items": {"type": "integer"}}, "valid_until": {"type": "string", "nullable": true}}}}} },
+        "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RateChangeResult"}}}}, "400": {"description": "Not a date"} }
+      }
+    },
     "/api/available-routes": {
       "get": {
         "summary": "Sales: every OD + vehicle combination with at least one vendor rate on file, so sales knows what can be served. Only the lane: no price, vendor names, costs or vendor counts.",
@@ -298,7 +319,7 @@
     "/api/vm/summary": {
       "get": {
         "summary": "Prioritization summary (readable by all roles) — 'seeking_lower_rate' is still-open requests with an existing Final Rate the sales target didn't meet; 'missing_lanes' is lanes VM has already closed as closed_no_vendor, accumulated by how often that's happened. Both ranked by count; default top 10, pass a higher limit for the full list.",
-        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 10, "minimum": 1, "maximum": 1000}}],
+        "parameters": [{"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 10, "minimum": 1, "maximum": 1000}}, {"name": "days", "in": "query", "required": false, "description": "Only requests raised in the last N days count; 0 = all time.", "schema": {"type": "integer", "default": 90, "minimum": 0, "maximum": 3650}}],
         "responses": { "200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VmSummary"}}}} }
       }
     },
@@ -500,6 +521,7 @@
         "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"},
           "target_rate": {"type": "number", "nullable": true}, "min_trip": {"type": "integer", "nullable": true} }
       },
+      "RateChangeResult": { "type": "object", "properties": { "changed_lanes": {"type": "integer"} } },
       "AvailableRoute": {
         "type": "object",
         "properties": { "origin": {"type": "string"}, "destination": {"type": "string"}, "vehicle_type": {"type": "string"} }
@@ -652,6 +674,10 @@
       "VendorRate": {
         "type": "object",
         "properties": {
+          "id": {"type": "integer"},
+          "valid_until": {"type": "string", "nullable": true}, "revoked_at": {"type": "string", "nullable": true},
+          "revoked_by": {"type": "string", "nullable": true}, "revoke_reason": {"type": "string", "nullable": true},
+          "status": {"type": "string", "enum": ["active", "expired", "revoked"]},
           "origin": { "type": "string" },
           "destination": { "type": "string" },
           "vehicle_type": { "type": "string" },

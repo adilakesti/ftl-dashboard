@@ -818,8 +818,9 @@ VM_REQUEST_SELECT_FROM = """
 
 async def _lane_vendor_counts(cur) -> dict[tuple[str, str, str], int]:
     await cur.execute(
-        """SELECT norm_origin, norm_destination, norm_vehicle_type, COUNT(*)
-           FROM vendor_rates GROUP BY norm_origin, norm_destination, norm_vehicle_type"""
+        f"""SELECT norm_origin, norm_destination, norm_vehicle_type, COUNT(*)
+            FROM vendor_rates WHERE {master_rates.ACTIVE_SQL}
+            GROUP BY norm_origin, norm_destination, norm_vehicle_type"""
     )
     return {(r[0], r[1], r[2]): r[3] for r in await cur.fetchall()}
 
@@ -1297,28 +1298,40 @@ async def resolve_requests_ready(request: Request, shipper_name: str | None = Qu
 
 
 @app.get("/api/vm/summary", response_model=VmSummary)
-async def vm_summary(request: Request, limit: int = Query(10, ge=1, le=1000)):
+async def vm_summary(
+    request: Request,
+    limit: int = Query(10, ge=1, le=1000),
+    days: int = Query(90, ge=0, le=3650),
+):
+    """Prioritization. Only requests raised in the last `days` days count (0 = all
+    time). A lane leaves "Confirmed no vendor available" as soon as it has an active
+    vendor rate again (e.g. VM uploaded one)."""
     await require_permission(request, "viewQueue")
+    since, since_args = ("AND created_at >= NOW() - INTERVAL %s DAY", (days,)) if days else ("", ())
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
-               FROM vm_requests
-               WHERE status IN ('open', 'in_progress', 'closed_no_lower_rate') AND current_final_rate IS NOT NULL
-               GROUP BY origin, destination, vehicle_type
-               ORDER BY c DESC LIMIT %s""",
-            (limit,),
+            f"""SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
+                FROM vm_requests
+                WHERE status IN ('open', 'in_progress', 'closed_no_lower_rate') AND current_final_rate IS NOT NULL
+                {since}
+                GROUP BY origin, destination, vehicle_type
+                ORDER BY c DESC LIMIT %s""",
+            (*since_args, limit),
         )
         seeking = await cur.fetchall()
 
         await cur.execute(
-            """SELECT origin, destination, vehicle_type, COUNT(*) c
-               FROM vm_requests
-               WHERE status = 'closed_no_vendor'
-               GROUP BY origin, destination, vehicle_type
-               ORDER BY c DESC LIMIT %s""",
-            (limit,),
+            f"""SELECT origin, destination, vehicle_type, COUNT(*) c
+                FROM vm_requests
+                WHERE status = 'closed_no_vendor' {since}
+                GROUP BY origin, destination, vehicle_type
+                ORDER BY c DESC""",
+            since_args,
         )
-        missing = await cur.fetchall()
+        missing_all = await cur.fetchall()
+        served = await _lane_vendor_counts(cur)
+    key = lambda r: (master_rates.norm(r[0]), master_rates.norm(r[1]), master_rates.norm(r[2]))
+    missing = [r for r in missing_all if key(r) not in served][:limit]
 
     to_seeking_lane = lambda r: LaneSummary(
         origin=r[0], destination=r[1], vehicle_type=r[2], request_count=r[3],
@@ -1350,6 +1363,7 @@ class MasterRateMeta(BaseModel):
 
 
 class VendorRate(BaseModel):
+    id: int
     origin: str
     destination: str
     vehicle_type: str
@@ -1357,6 +1371,11 @@ class VendorRate(BaseModel):
     cost: float
     updated_by: str | None
     updated_at: str
+    valid_until: str | None = None
+    revoked_at: str | None = None
+    revoked_by: str | None = None
+    revoke_reason: str | None = None
+    status: str = "active"  # active | expired | revoked
 
 
 class VendorRateList(BaseModel):
@@ -1411,12 +1430,15 @@ async def master_rate_vendors(request: Request):
 @app.get("/api/master-rates/export")
 async def export_master_rates(request: Request):
     await require_role(request, "vm")
-    rows = await master_rates.list_all(db.pool())
+    # Active rates only: re-uploading an export must not bring revoked rates back.
+    rows = await master_rates.list_all(db.pool(), active_only=True)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Origin L2", "Destinasi L2", "Vehicle Type", "Cost/Rate", "Vendor Name"])
+    writer.writerow(["Origin L2", "Destinasi L2", "Vehicle Type", "Cost/Rate", "Vendor Name", "Valid Until"])
     for r in rows:
-        writer.writerow([r["origin"], r["destination"], r["vehicle_type"], r["cost"], r["vendor_name"]])
+        vu = r["valid_until"]
+        vu = f"{vu[8:10]}-{vu[5:7]}-{vu[0:4]}" if vu else ""
+        writer.writerow([r["origin"], r["destination"], r["vehicle_type"], r["cost"], r["vendor_name"], vu])
     buf.seek(0)
     return StreamingResponse(
         iter([buf.getvalue()]),
@@ -2817,10 +2839,10 @@ async def available_routes(request: Request):
     await require_permission(request, "quickCheck")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            """SELECT MIN(origin), MIN(destination), MIN(vehicle_type)
-               FROM vendor_rates
-               GROUP BY norm_origin, norm_destination, norm_vehicle_type
-               ORDER BY 1, 2, 3"""
+            f"""SELECT MIN(origin), MIN(destination), MIN(vehicle_type)
+                FROM vendor_rates WHERE {master_rates.ACTIVE_SQL}
+                GROUP BY norm_origin, norm_destination, norm_vehicle_type
+                ORDER BY 1, 2, 3"""
         )
         rows = await cur.fetchall()
     return AvailableRouteList(routes=[AvailableRoute(origin=o, destination=d, vehicle_type=v) for o, d, v in rows])
@@ -2892,4 +2914,68 @@ async def unmark_ticket_live(submission_id: int, request: Request):
         )
         if cur.rowcount:
             await _system_comment(cur, submission_id, f"{email} moved this ticket back from live.")
+
+
+# ---------------------------------------------------------------------------
+# Master vendor rates: revoke / restore / valid-until (VM, procurement, superadmin)
+# ---------------------------------------------------------------------------
+
+
+class RateIdsIn(BaseModel):
+    ids: list[int]
+
+
+class RevokeIn(RateIdsIn):
+    reason: str
+
+
+class ValidUntilIn(RateIdsIn):
+    valid_until: str | None = None  # DD-MM-YYYY or YYYY-MM-DD; null clears it
+
+
+class RateChangeResult(BaseModel):
+    changed_lanes: int
+
+
+def _check_ids(ids: list[int]) -> list[int]:
+    ids = sorted({int(i) for i in ids})
+    if not ids:
+        raise HTTPException(400, "Pick at least one rate")
+    if len(ids) > 2000:
+        raise HTTPException(400, "At most 2000 rates at a time")
+    return ids
+
+
+@app.post("/api/master-rates/revoke", response_model=RateChangeResult)
+async def revoke_master_rates(body: RevokeIn, request: Request):
+    """Stop using rates for pricing (kept for history). Quotes already given keep the
+    final rate they were given; new quotes, quick checks and auto-resolve ignore them."""
+    email, _ = await require_permission(request, "manageRates")
+    reason = body.reason.strip()
+    if not reason:
+        raise HTTPException(400, "A reason is required")
+    lanes = await master_rates.revoke(db.pool(), _check_ids(body.ids), email, reason[:500])
+    return RateChangeResult(changed_lanes=len(lanes))
+
+
+@app.post("/api/master-rates/restore", response_model=RateChangeResult)
+async def restore_master_rates(body: RateIdsIn, request: Request):
+    """Undo a revoke: the rates are used for pricing again (unless expired). Open
+    tickets on those lanes are re-checked and priced where they now can be."""
+    email, _ = await require_permission(request, "manageRates")
+    lanes = await master_rates.restore(db.pool(), _check_ids(body.ids), email)
+    await _auto_resolve_matching(db.pool(), {tuple(master_rates.norm(x) for x in l) for l in lanes}, email)
+    return RateChangeResult(changed_lanes=len(lanes))
+
+
+@app.post("/api/master-rates/valid-until", response_model=RateChangeResult)
+async def set_master_rates_valid_until(body: ValidUntilIn, request: Request):
+    """Set (or clear) the date after which rates stop being used automatically."""
+    email, _ = await require_permission(request, "manageRates")
+    try:
+        valid_until = master_rates.parse_date(body.valid_until)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    lanes = await master_rates.set_valid_until(db.pool(), _check_ids(body.ids), valid_until, email)
+    return RateChangeResult(changed_lanes=len(lanes))
 

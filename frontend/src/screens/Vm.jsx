@@ -136,26 +136,28 @@ export function VmServiceRequests({ requests, onSaved, canEdit = true }) {
 
 export function MasterRatesPanel() {
   const [meta, setMeta] = useState(null);
-  const [rates, setRates] = useState([]);
-  const [showExisting, setShowExisting] = useState(false);
+  const [rates, setRates] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
   const [ok, setOk] = useState(null);
-
-  const laneKey = (r) => [r.origin, r.destination, r.vehicle_type].map((x) => x.trim().toLowerCase()).join("|");
-  const laneVendorCount = {};
-  for (const r of rates) laneVendorCount[laneKey(r)] = (laneVendorCount[laneKey(r)] || 0) + 1;
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("active");
+  const [vehicle, setVehicle] = useState("");
+  const [picked, setPicked] = useState(new Set());
+  const [action, setAction] = useState(null); // null | "revoke" | "valid"
+  const [reason, setReason] = useState("");
+  const [validUntil, setValidUntil] = useState("");
+  const [busy, setBusy] = useState(false);
 
   const loadMeta = () => fetch("/api/master-rates/meta").then((r) => r.json()).then(setMeta);
-  const loadRates = () => fetch("/api/master-rates").then((r) => r.json()).then((d) => setRates(d.rates));
-
+  const loadRates = () =>
+    fetch("/api/master-rates")
+      .then((r) => r.json())
+      .then((d) => setRates(d.rates));
   useEffect(() => {
     loadMeta();
+    loadRates();
   }, []);
-
-  useEffect(() => {
-    if (showExisting) loadRates();
-  }, [showExisting]);
 
   const onUpload = async (e) => {
     const file = e.target.files[0];
@@ -177,7 +179,7 @@ export function MasterRatesPanel() {
           (data.resolved_count > 0 ? ` Auto-resolved ${data.resolved_count} matching VM request(s).` : "")
       );
       loadMeta();
-      if (showExisting) loadRates();
+      loadRates();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -186,76 +188,250 @@ export function MasterRatesPanel() {
     }
   };
 
-  return (
-    <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4 mb-6">
-      <h2 className="font-semibold mb-2">Master vendor rates</h2>
-      <p className="text-sm text-ink-500 mb-3">
-        Columns: Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name.{" "}
-        <a href={MASTER_RATE_TEMPLATE_URL} download="master_vendor_rate_template.csv" className="text-brand-600 hover:underline">
-          Download template
-        </a>
-        . Uploads add/update rows — existing lanes not in the file are kept.
-      </p>
-      <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
-      {uploading && <p className="text-sm text-ink-500 mt-2">Processing…</p>}
-      {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
-      {ok && <p className="text-sm text-green-600 mt-2">{ok}</p>}
-      {meta?.created_at ? (
-        <p className="text-xs text-ink-400 mt-3">
-          Last upload {meta.created_at} by {meta.uploaded_by} — {meta.row_count} row(s)
-          {meta.filename ? ` (${meta.filename})` : ""}.
-        </p>
-      ) : (
-        <p className="text-xs text-ink-400 mt-3">No master rates loaded yet.</p>
-      )}
+  const ddmmyyyy = (iso) => (iso ? `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}` : "–");
+  const laneKey = (r) => [r.origin, r.destination, r.vehicle_type].map((x) => x.trim().toLowerCase()).join("|");
+  const activeCount = {};
+  for (const r of rates || []) if (r.status === "active") activeCount[laneKey(r)] = (activeCount[laneKey(r)] || 0) + 1;
 
-      <div className="mt-4 pt-4 border-t border-ink-100">
-        <div className="flex items-center justify-between">
-          <button onClick={() => setShowExisting((v) => !v)} className="text-sm text-brand-600 hover:underline">
-            {showExisting ? "Hide" : "View"} existing vendor rates
-          </button>
-          {showExisting && (
-            <a href="/api/master-rates/export" className="text-sm px-3 py-1.5 rounded border border-ink-200 hover:bg-ink-50">
-              Download CSV
-            </a>
-          )}
+  const vehicles = [...new Set((rates || []).map((r) => r.vehicle_type))].sort();
+  const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = (rates || [])
+    .filter((r) => statusFilter === "all" || r.status === statusFilter)
+    .filter((r) => !vehicle || r.vehicle_type === vehicle)
+    .filter((r) => words.every((w) => `${r.origin} ${r.destination} ${r.vendor_name}`.toLowerCase().includes(w)));
+  const LIMIT = 500;
+  const shown = rows.slice(0, LIMIT);
+  const pickedRows = (rates || []).filter((r) => picked.has(r.id));
+  const allShownPicked = shown.length > 0 && shown.every((r) => picked.has(r.id));
+  const counts = { active: 0, expired: 0, revoked: 0 };
+  for (const r of rates || []) counts[r.status] = (counts[r.status] || 0) + 1;
+
+  const togglePick = (id) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  const toggleAllShown = () =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (allShownPicked) shown.forEach((r) => n.delete(r.id));
+      else shown.forEach((r) => n.add(r.id));
+      return n;
+    });
+
+  const run = async (path, body, doneMsg) => {
+    setBusy(true);
+    setError(null);
+    setOk(null);
+    const res = await fetch(`/api/master-rates/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...picked], ...body }),
+    });
+    setBusy(false);
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b.detail || "That didn't work.");
+      return;
+    }
+    setOk(doneMsg);
+    setPicked(new Set());
+    setAction(null);
+    setReason("");
+    setValidUntil("");
+    loadRates();
+  };
+
+  const STATUS_PILL = {
+    active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    expired: "bg-amber-50 text-amber-800 ring-amber-200",
+    revoked: "bg-red-50 text-red-700 ring-red-200",
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
+        <h2 className="font-semibold mb-2">Upload vendor rates</h2>
+        <p className="text-sm text-ink-500 mb-3">
+          Columns: Origin L2 | Destinasi L2 | Vehicle Type | Cost/Rate | Vendor Name | Valid Until (optional, DD-MM-YYYY).{" "}
+          <a href={MASTER_RATE_TEMPLATE_URL} download="master_vendor_rate_template.csv" className="text-brand-600 hover:underline">
+            Download template
+          </a>
+          . A row for an existing lane + vendor updates its cost (and makes it active again if it was revoked); rates not in
+          the file stay as they are.
+        </p>
+        <input type="file" accept=".csv" onChange={onUpload} disabled={uploading} />
+        {uploading && <p className="text-sm text-ink-500 mt-2">Processing…</p>}
+        {meta?.created_at ? (
+          <p className="text-xs text-ink-400 mt-3">
+            Last upload {meta.created_at} by {meta.uploaded_by}: {meta.row_count} row(s)
+            {meta.filename ? ` (${meta.filename})` : ""}.
+          </p>
+        ) : (
+          <p className="text-xs text-ink-400 mt-3">No master rates loaded yet.</p>
+        )}
+      </div>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {ok && <p className="text-sm text-green-700">{ok}</p>}
+
+      <div>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search origin, destination or vendor"
+            className="flex-1 min-w-[220px] border border-ink-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600"
+          />
+          <div className="flex p-1 bg-ink-100 rounded-lg">
+            {[
+              ["active", `Active (${counts.active})`],
+              ["expired", `Expired (${counts.expired})`],
+              ["revoked", `Revoked (${counts.revoked})`],
+              ["all", "All"],
+            ].map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setStatusFilter(k)}
+                className={`px-3 py-1 rounded-md text-sm font-medium ${statusFilter === k ? "bg-white text-ink-900 shadow-sm" : "text-ink-500 hover:text-ink-900"}`}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+          <select value={vehicle} onChange={(e) => setVehicle(e.target.value)} className="border border-ink-200 rounded-md px-2 py-2 text-sm bg-white">
+            <option value="">All vehicles</option>
+            {vehicles.map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+          <a href="/api/master-rates/export" className="text-sm px-3 py-2 rounded-md border border-ink-200 bg-white hover:bg-ink-50">
+            Download active rates
+          </a>
         </div>
-        {showExisting && (
-          <div className="mt-3 max-h-96 overflow-y-auto border border-ink-100 rounded">
-            <table className="w-full">
-              <thead className="sticky top-0 bg-white">
-                <tr>
-                  <Th>Origin</Th>
-                  <Th>Destination</Th>
-                  <Th>Vehicle Type</Th>
-                  <Th>Vendor</Th>
-                  <Th>Cost</Th>
-                  <Th>Updated</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {rates.map((r, i) => (
-                  <tr key={i}>
-                    <Td>{r.origin}</Td>
-                    <Td>{r.destination}</Td>
-                    <Td>
-                      {r.vehicle_type}
-                      {laneVendorCount[laneKey(r)] === 1 && <OnlyOneVendorBadge />}
-                    </Td>
-                    <Td>{r.vendor_name}</Td>
-                    <Td>{fmt(r.cost)}</Td>
-                    <Td className="text-ink-400 text-xs">{r.updated_by}</Td>
-                  </tr>
-                ))}
-                {rates.length === 0 && (
-                  <tr>
-                    <Td className="text-ink-400" colSpan={6}>No vendor rates yet</Td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+
+        {picked.size > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mb-3 p-3 rounded-lg bg-brand-50 ring-1 ring-brand-200 text-sm">
+            <span className="font-medium">{picked.size} selected</span>
+            <button onClick={() => setAction(action === "revoke" ? null : "revoke")} className="px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700">
+              Revoke
+            </button>
+            {pickedRows.some((r) => r.status === "revoked") && (
+              <button
+                disabled={busy}
+                onClick={() => run("restore", {}, "Rates restored. Open tickets on those lanes were re-checked.")}
+                className="px-3 py-1.5 rounded-md border border-ink-200 bg-white hover:bg-ink-50"
+              >
+                Restore
+              </button>
+            )}
+            <button onClick={() => setAction(action === "valid" ? null : "valid")} className="px-3 py-1.5 rounded-md border border-ink-200 bg-white hover:bg-ink-50">
+              Set valid until
+            </button>
+            <button onClick={() => setPicked(new Set())} className="text-ink-500 hover:underline ml-auto">
+              Clear selection
+            </button>
+            {action === "revoke" && (
+              <div className="w-full flex flex-wrap items-center gap-2 pt-2">
+                <input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Reason, e.g. vendor no longer serves this lane"
+                  className="flex-1 min-w-[260px] border border-ink-200 rounded-md px-3 py-1.5 bg-white"
+                />
+                <button
+                  disabled={busy || !reason.trim()}
+                  onClick={() => run("revoke", { reason }, "Rates revoked. They're no longer used for new prices.")}
+                  className="px-3 py-1.5 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
+                >
+                  Revoke {picked.size}
+                </button>
+                <span className="text-xs text-ink-500 w-full">Quotes already given keep their final rate. Revoked rates stay in history and can be restored.</span>
+              </div>
+            )}
+            {action === "valid" && (
+              <div className="w-full flex flex-wrap items-center gap-2 pt-2">
+                <input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} className="border border-ink-200 rounded-md px-2 py-1.5 bg-white" />
+                <button
+                  disabled={busy || !validUntil}
+                  onClick={() => run("valid-until", { valid_until: validUntil }, "Valid-until date set.")}
+                  className="px-3 py-1.5 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40"
+                >
+                  Apply to {picked.size}
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => run("valid-until", { valid_until: null }, "Valid-until date removed.")}
+                  className="px-3 py-1.5 rounded-md border border-ink-200 bg-white hover:bg-ink-50"
+                >
+                  Remove date
+                </button>
+                <span className="text-xs text-ink-500 w-full">After this date the rates stop being used for pricing automatically.</span>
+              </div>
+            )}
           </div>
         )}
+
+        <div className="bg-white rounded-xl border border-ink-100 shadow-sm overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-ink-50/60">
+              <tr className="text-left text-xs text-ink-500">
+                <th className="px-3 py-2.5 w-8">
+                  <input type="checkbox" checked={allShownPicked} onChange={toggleAllShown} aria-label="Select all shown" />
+                </th>
+                <th className="px-3 py-2.5 font-medium">Origin</th>
+                <th className="px-3 py-2.5 font-medium">Destination</th>
+                <th className="px-3 py-2.5 font-medium">Vehicle</th>
+                <th className="px-3 py-2.5 font-medium">Vendor</th>
+                <th className="px-3 py-2.5 font-medium text-right">Cost</th>
+                <th className="px-3 py-2.5 font-medium">Valid until</th>
+                <th className="px-3 py-2.5 font-medium">Status</th>
+                <th className="px-3 py-2.5 font-medium">Updated by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => (
+                <tr key={r.id} className={`border-t border-ink-100 ${picked.has(r.id) ? "bg-brand-50/60" : ""} ${r.status !== "active" ? "text-ink-500" : ""}`}>
+                  <td className="px-3 py-2">
+                    <input type="checkbox" checked={picked.has(r.id)} onChange={() => togglePick(r.id)} aria-label={`Select ${r.vendor_name} ${r.origin} to ${r.destination}`} />
+                  </td>
+                  <td className="px-3 py-2">{r.origin}</td>
+                  <td className="px-3 py-2">{r.destination}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {r.vehicle_type}
+                    {r.status === "active" && activeCount[laneKey(r)] === 1 && <OnlyOneVendorBadge />}
+                  </td>
+                  <td className="px-3 py-2">{r.vendor_name}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmt(r.cost)}</td>
+                  <td className="px-3 py-2 tabular-nums whitespace-nowrap">{ddmmyyyy(r.valid_until)}</td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ring-1 ring-inset capitalize ${STATUS_PILL[r.status]}`}>{r.status}</span>
+                    {r.status === "revoked" && (
+                      <p className="text-xs text-ink-500 mt-0.5 max-w-[220px]">
+                        {r.revoke_reason} · {r.revoked_by}, {ddmmyyyy(r.revoked_at)}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-ink-400">{r.updated_by}</td>
+                </tr>
+              ))}
+              {rates && rows.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-3 py-10 text-center text-sm text-ink-400">
+                    No rates match.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <p className="px-3 py-2 text-xs text-ink-400 border-t border-ink-100">
+            {!rates ? "Loading…" : `Showing ${shown.length} of ${rows.length} matching (${rates.length} total).`}
+            {rows.length > LIMIT && " Narrow the search to see the rest."}
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -383,14 +559,14 @@ export function PrioritizationSection({ title, lanes, showAvgTarget, onViewMore,
   );
 }
 
-export function PrioritizationFullPage({ lanesKey, title, showAvgTarget, onBack }) {
+export function PrioritizationFullPage({ lanesKey, title, showAvgTarget, onBack, days = 90 }) {
   const [lanes, setLanes] = useState(null);
 
   useEffect(() => {
-    fetch("/api/vm/summary?limit=500")
+    fetch(`/api/vm/summary?limit=500&days=${days}`)
       .then((r) => r.json())
       .then((d) => setLanes(d[lanesKey]));
-  }, [lanesKey]);
+  }, [lanesKey, days]);
 
   return (
     <div>
@@ -676,12 +852,21 @@ export function OnlyOneVendorBadge() {
   );
 }
 
+const PERIODS = [
+  [30, "Last 30 days"],
+  [90, "Last 90 days"],
+  [365, "Last 12 months"],
+  [0, "All time"],
+];
+
 export function PrioritizationScreen() {
   const [summary, setSummary] = useState(null);
   const [fullView, setFullView] = useState(null); // null | { key, title }
+  const [days, setDays] = useState(90);
   useEffect(() => {
-    fetch("/api/vm/summary").then((r) => r.json()).then(setSummary);
-  }, []);
+    setSummary(null);
+    fetch(`/api/vm/summary?days=${days}`).then((r) => r.json()).then(setSummary);
+  }, [days]);
 
   if (fullView) {
     return (
@@ -689,12 +874,30 @@ export function PrioritizationScreen() {
         lanesKey={fullView.key}
         title={fullView.title}
         showAvgTarget={fullView.key === "seeking_lower_rate"}
+        days={days}
         onBack={() => setFullView(null)}
       />
     );
   }
-  if (!summary) return <p className="text-sm text-ink-400">Loading…</p>;
   return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-sm text-ink-500">Counting requests raised in</span>
+        <div className="flex p-1 bg-ink-100 rounded-lg">
+          {PERIODS.map(([d, l]) => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              className={`px-3 py-1 rounded-md text-sm font-medium ${days === d ? "bg-white text-ink-900 shadow-sm" : "text-ink-500 hover:text-ink-900"}`}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+      {!summary ? (
+        <p className="text-sm text-ink-400">Loading…</p>
+      ) : (
     <div className="grid lg:grid-cols-2 gap-6">
       <div>
         <PrioritizationSection
@@ -717,9 +920,12 @@ export function PrioritizationScreen() {
           onViewMore={(key, title) => setFullView({ key, title })}
         />
         <p className="text-xs text-ink-500 mt-2">
-          Lanes closed as "no vendor available", counted by how often. Repeat lanes are worth another vendor push.
+          Lanes closed as "no vendor available", counted by how often. Repeat lanes are worth another vendor push. A lane
+          drops off as soon as it has an active vendor rate again (e.g. after an upload).
         </p>
       </div>
+    </div>
+      )}
     </div>
   );
 }
