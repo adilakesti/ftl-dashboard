@@ -701,9 +701,8 @@ class SubmitIn(BaseModel):
 async def submit_submission(submission_id: int, body: SubmitIn, request: Request):
     """Sales' final gate. Until this runs a submission is a draft: nothing reaches VM
     and it shows nowhere but the history list. On submit, the lanes sales chose to
-    ask VM about — plus every lane that can't be priced yet because it has a single
-    vendor — become VM tickets. Lanes without a rate that sales did not ask about
-    are marked "Not requested" and go no further."""
+    ask VM about — plus every lane that can't be priced yet (no vendor, or a single
+    vendor) — become VM tickets."""
     email = await require_role(request, "sales")
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -2881,7 +2880,8 @@ async def edit_lane(submission_id: int, row_id: int, body: LaneEdit, request: Re
                           current_final_rate = %s WHERE id = %s""",
                 (origin, destination, vehicle, body.target_rate, result.final_rate, open_req[0]),
             )
-        elif result.single_vendor:
+        elif result.single_vendor or result.final_rate is None:
+            # Same rule as submit: a lane that can't be priced goes to VM.
             await cur.execute(
                 """INSERT INTO vm_requests
                    (submission_row_id, origin, destination, vehicle_type, target_rate, current_final_rate, requested_by)
