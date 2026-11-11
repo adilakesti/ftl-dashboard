@@ -206,6 +206,14 @@
         "responses": { "204": {"description": "No Content"}, "400": {"description": "Unknown region"}, "403": {"description": "Not the owner"} }
       }
     },
+    "/api/submissions/{submission_id}/salescrm-id": {
+      "put": {
+        "summary": "Set or correct a ticket's SalesCRM ID (the deal it belongs to). The person who raised it or a superadmin.",
+        "parameters": [{"name": "submission_id", "in": "path", "required": true, "schema": {"type": "integer"}}],
+        "requestBody": { "required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"salescrm_id": {"type": "string", "nullable": true, "maxLength": 64}}}}} },
+        "responses": { "204": {"description": "No Content"}, "400": {"description": "Too long"}, "403": {"description": "Not the owner"} }
+      }
+    },
     "/api/tickets/{submission_id}/go-live": {
       "post": {
         "summary": "Mark a ticket's shipper as live (Go-live). Allowed once no lane waits on VM and at least one lane has a final rate.",
@@ -488,7 +496,8 @@
           "submitted_at": { "type": "string", "nullable": true, "description": "Null while the submission is a draft." },
           "od_region": { "type": "string", "nullable": true, "description": "CJ, EJ, GJ, WJ, or the island for lanes outside Java; chosen by sales." },
           "went_live_at": { "type": "string", "nullable": true, "description": "When the ticket was marked live (Go-live)." },
-          "went_live_by": { "type": "string", "nullable": true }
+          "went_live_by": { "type": "string", "nullable": true },
+          "salescrm_id": { "type": "string", "nullable": true, "description": "SalesCRM deal ID; shipper name, Sales PIC and potential revenue will sync from SalesCRM by it." }
         }
       },
       "SubmissionList": { "type": "object", "properties": {"submissions": {"type": "array", "items": {"$ref": "#/components/schemas/Submission"}}} },
@@ -511,7 +520,8 @@
           "vm_open_count": {"type": "integer"}, "vm_working_count": {"type": "integer"},
           "oldest_open_days": {"type": "integer", "nullable": true}, "editable": {"type": "boolean"},
           "od_region": {"type": "string", "nullable": true}, "potential_monthly_revenue": {"type": "number", "nullable": true},
-          "went_live_at": {"type": "string", "nullable": true}, "went_live_by": {"type": "string", "nullable": true}
+          "went_live_at": {"type": "string", "nullable": true}, "went_live_by": {"type": "string", "nullable": true},
+          "salescrm_id": {"type": "string", "nullable": true}
         }
       },
       "TicketSummaryList": { "type": "object", "properties": { "tickets": {"type": "array", "items": {"$ref": "#/components/schemas/TicketSummary"}} } },

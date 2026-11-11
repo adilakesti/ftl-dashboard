@@ -519,10 +519,73 @@ export function LaneFilterTable({ lanes, onClose, showAvgTarget, hideCollapse })
   );
 }
 
-export function PrioritizationSection({ title, lanes, showAvgTarget, onViewMore, lanesKey }) {
+// Copy (tab-separated, pastes into Excel columns) or download (CSV) the FULL list for
+// the chosen period — not just the top 10 shown.
+function ExportLanes({ lanesKey, title, showAvgTarget, days }) {
+  const [msg, setMsg] = useState(null);
+  const periodLabel = days ? `last ${days} days` : "all time";
+  const table = async () => {
+    const d = await fetch(`/api/vm/summary?limit=1000&days=${days}`).then((r) => r.json());
+    const head = ["Origin", "Destination", "Vehicle", "Requests", ...(showAvgTarget ? ["Avg Target Rate"] : [])];
+    const rows = (d[lanesKey] || []).map((l) => [
+      l.origin,
+      l.destination,
+      l.vehicle_type,
+      l.request_count,
+      ...(showAvgTarget ? [l.avg_target_rate != null ? Math.round(l.avg_target_rate) : ""] : []),
+    ]);
+    return [head, ...rows];
+  };
+  const flash = (t) => {
+    setMsg(t);
+    setTimeout(() => setMsg(null), 2500);
+  };
+  const copy = async () => {
+    const rows = await table();
+    const tsv = rows.map((r) => r.map((c) => String(c).replace(/[\t\n]/g, " ")).join("\t")).join("\n");
+    try {
+      await navigator.clipboard.writeText(tsv);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = tsv;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    flash(`Copied ${rows.length - 1} rows (${periodLabel}). Paste into Excel.`);
+  };
+  const download = async () => {
+    const rows = await table();
+    const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${days ? `${days}d` : "all"}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    flash(`Downloaded ${rows.length - 1} rows (${periodLabel}).`);
+  };
+  return (
+    <div className="flex items-center gap-2">
+      {msg && <span className="text-xs text-green-700">{msg}</span>}
+      <button onClick={copy} className="text-xs px-2.5 py-1 rounded-md border border-ink-200 hover:bg-ink-50">
+        Copy Table
+      </button>
+      <button onClick={download} className="text-xs px-2.5 py-1 rounded-md border border-ink-200 hover:bg-ink-50">
+        Download CSV
+      </button>
+    </div>
+  );
+}
+
+export function PrioritizationSection({ title, lanes, showAvgTarget, onViewMore, lanesKey, days = 90 }) {
   return (
     <div className="bg-white rounded-xl border border-ink-100 shadow-sm p-4">
-      <h3 className="font-semibold mb-3">{title}</h3>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <h3 className="font-semibold">{title}</h3>
+        <ExportLanes lanesKey={lanesKey} title={title} showAvgTarget={showAvgTarget} days={days} />
+      </div>
       <table className="w-full text-sm">
         <thead>
           <tr>
@@ -573,7 +636,10 @@ export function PrioritizationFullPage({ lanesKey, title, showAvgTarget, onBack,
       <button onClick={onBack} className="text-sm text-ink-500 hover:underline mb-3">
         ← Back to Prioritization
       </button>
-      <h2 className="font-semibold text-lg mb-3">{title}</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-lg">{title}</h2>
+        <ExportLanes lanesKey={lanesKey} title={title} showAvgTarget={showAvgTarget} days={days} />
+      </div>
       <div className="bg-white rounded-xl border border-ink-100 shadow-sm">
         {lanes ? (
           <LaneFilterTable lanes={lanes} onClose={onBack} showAvgTarget={showAvgTarget} hideCollapse />
@@ -901,22 +967,25 @@ export function PrioritizationScreen() {
     <div className="grid lg:grid-cols-2 gap-6">
       <div>
         <PrioritizationSection
-          title="Seeking a lower rate"
+          title="Seeking A Lower Rate"
           lanes={summary.seeking_lower_rate}
           showAvgTarget
           lanesKey="seeking_lower_rate"
+          days={days}
           onViewMore={(key, title) => setFullView({ key, title })}
         />
         <p className="text-xs text-ink-500 mt-2">
           Lanes that already have a final rate where sales asked for a lower one, including requests closed as
-          "no lower rate found". Avg target rate averages every request on the lane.
+          "no lower rate found". Avg target rate averages every request on the lane. A lane drops off once VM uploads
+          a rate for it after its latest request, and comes back if sales asks again.
         </p>
       </div>
       <div>
         <PrioritizationSection
-          title="Confirmed no vendor available"
+          title="Confirmed No Vendor Available"
           lanes={summary.missing_lanes}
           lanesKey="missing_lanes"
+          days={days}
           onViewMore={(key, title) => setFullView({ key, title })}
         />
         <p className="text-xs text-ink-500 mt-2">

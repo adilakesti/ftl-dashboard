@@ -74,7 +74,7 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
       .filter(
         (t) =>
           !q ||
-          [t.ticket_no, t.shipper_name, t.sales_pic, t.raised_by, t.od_region, ...t.vehicles].filter(Boolean).join(" ").toLowerCase().includes(q)
+          [t.ticket_no, t.salescrm_id, t.shipper_name, t.sales_pic, t.raised_by, t.od_region, ...t.vehicles].filter(Boolean).join(" ").toLowerCase().includes(q)
       );
     const sorters = {
       newest: (a, b) => String(b.raised_at).localeCompare(String(a.raised_at)) || b.id - a.id,
@@ -104,7 +104,7 @@ export function TicketBoard({ mode = "all", onOpen, initialSearch = "" }) {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search ticket no., shipper, sales, region, vehicle"
+          placeholder="Search ticket no., SalesCRM ID, shipper, sales, region, vehicle"
           className="flex-1 min-w-[220px] border border-ink-200 rounded-md px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-600"
         />
         {mode !== "vm" && (
@@ -364,6 +364,21 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
     if (res.ok) load();
   };
 
+  const saveCrmId = async (value) => {
+    const v = value.trim();
+    if (v === (s.salescrm_id || "")) return;
+    const res = await fetch(`/api/submissions/${s.id}/salescrm-id`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ salescrm_id: v || null }),
+    });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      window.alert(b.detail || "Couldn't save the SalesCRM ID.");
+    }
+    load();
+  };
+
   const setLive = async (live) => {
     if (!live && !window.confirm("Move this ticket back from live?")) return;
     const res = await fetch(`/api/tickets/${s.id}/go-live`, { method: live ? "POST" : "DELETE" });
@@ -431,6 +446,23 @@ export function TicketDetail({ ticketId, perms, me, onBack }) {
           <div>
             <p className="text-xs text-ink-500">Raised</p>
             <p className="tabular-nums">{fmtDay(s.submitted_at || s.created_at)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-ink-500">SalesCRM ID</p>
+            {canSetRegion ? (
+              <input
+                key={s.salescrm_id || ""}
+                defaultValue={s.salescrm_id || ""}
+                maxLength={64}
+                placeholder="Add ID"
+                onBlur={(e) => saveCrmId(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                className="mt-0.5 w-40 border border-ink-200 rounded-md px-2 py-1 text-sm bg-white"
+                aria-label="SalesCRM ID"
+              />
+            ) : (
+              <p>{s.salescrm_id || "–"}</p>
+            )}
           </div>
           <div>
             <p className="text-xs text-ink-500">OD Region</p>

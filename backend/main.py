@@ -270,6 +270,7 @@ class Submission(BaseModel):
     od_region: str | None = None
     went_live_at: str | None = None
     went_live_by: str | None = None
+    salescrm_id: str | None = None
 
 
 # OD Region sales pick when raising a ticket: the Java regions, or the island for
@@ -424,13 +425,14 @@ def _row_to_submission(r) -> Submission:
         od_region=r[13],
         went_live_at=str(r[14]) if r[14] else None,
         went_live_by=r[15],
+        salescrm_id=r[16],
     )
 
 
 SUBMISSION_COLUMNS = (
     "id, uploaded_by, filename, created_at, shipper_name, sales_pic, shipper_status, "
     "potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, submitted_at, "
-    "od_region, went_live_at, went_live_by"
+    "od_region, went_live_at, went_live_by, salescrm_id"
 )
 
 
@@ -447,8 +449,10 @@ async def upload_submission(
     add_ons_json: str | None = Form(None),
     sales_email: str | None = Form(None),
     od_region: str | None = Form(None),
+    salescrm_id: str | None = Form(None),
 ):
     email = await require_role(request, "sales")
+    salescrm_id = _clean_salescrm_id(salescrm_id)
     od_region = (od_region or "").strip() or None
     if od_region is not None and od_region not in OD_REGIONS:
         raise HTTPException(400, f"OD Region must be one of {', '.join(OD_REGIONS)}")
@@ -489,8 +493,9 @@ async def upload_submission(
         await cur.execute(
             """INSERT INTO submissions
                (uploaded_by, filename, shipper_name, sales_pic, shipper_status,
-                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, od_region)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                potential_monthly_revenue, commodity_type, high_value_fragile, add_ons, sales_email, od_region,
+                salescrm_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 email,
                 file.filename,
@@ -503,6 +508,7 @@ async def upload_submission(
                 json.dumps(add_ons_list) if add_ons_list else None,
                 sales_email,
                 od_region,
+                salescrm_id,
             ),
         )
         submission_id = cur.lastrowid
@@ -1310,15 +1316,22 @@ async def vm_summary(
     since, since_args = ("AND created_at >= NOW() - INTERVAL %s DAY", (days,)) if days else ("", ())
     async with db.pool().acquire() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"""SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target
+            f"""SELECT origin, destination, vehicle_type, COUNT(*) c, AVG(target_rate) avg_target, MAX(created_at)
                 FROM vm_requests
                 WHERE status IN ('open', 'in_progress', 'closed_no_lower_rate') AND current_final_rate IS NOT NULL
                 {since}
                 GROUP BY origin, destination, vehicle_type
-                ORDER BY c DESC LIMIT %s""",
-            (*since_args, limit),
+                ORDER BY c DESC""",
+            since_args,
         )
-        seeking = await cur.fetchall()
+        seeking_all = await cur.fetchall()
+        # When each lane's active rates were last uploaded/changed.
+        await cur.execute(
+            f"""SELECT norm_origin, norm_destination, norm_vehicle_type, MAX(updated_at)
+                FROM vendor_rates WHERE {master_rates.ACTIVE_SQL}
+                GROUP BY norm_origin, norm_destination, norm_vehicle_type"""
+        )
+        rate_updated = {(r[0], r[1], r[2]): r[3] for r in await cur.fetchall()}
 
         await cur.execute(
             f"""SELECT origin, destination, vehicle_type, COUNT(*) c
@@ -1331,6 +1344,12 @@ async def vm_summary(
         missing_all = await cur.fetchall()
         served = await _lane_vendor_counts(cur)
     key = lambda r: (master_rates.norm(r[0]), master_rates.norm(r[1]), master_rates.norm(r[2]))
+    # A lane asking for a lower rate is addressed once VM uploads (or changes) a rate for
+    # it after the latest request; it comes back if sales asks again later.
+    seeking = [
+        r for r in seeking_all
+        if not (rate_updated.get(key(r)) and r[5] and rate_updated[key(r)] > r[5])
+    ][:limit]
     missing = [r for r in missing_all if key(r) not in served][:limit]
 
     to_seeking_lane = lambda r: LaneSummary(
@@ -2670,6 +2689,7 @@ class TicketSummary(BaseModel):
     potential_monthly_revenue: float | None = None
     went_live_at: str | None = None
     went_live_by: str | None = None
+    salescrm_id: str | None = None
 
 
 class TicketSummaryList(BaseModel):
@@ -2704,7 +2724,8 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
                        s.commodity_type, s.add_ons,
                        a.lanes, a.vehicles, a.with_target, a.priced,
                        COALESCE(v.vm_open, 0), COALESCE(v.vm_working, 0), v.oldest_open, COALESCE(v.vm_started, 0),
-                       s.ticket_seq, s.od_region, s.potential_monthly_revenue, s.went_live_at, s.went_live_by
+                       s.ticket_seq, s.od_region, s.potential_monthly_revenue, s.went_live_at, s.went_live_by,
+                       s.salescrm_id
                 FROM submissions s
                 JOIN (SELECT submission_id, COUNT(*) lanes,
                              GROUP_CONCAT(DISTINCT vehicle_type ORDER BY vehicle_type SEPARATOR '|') vehicles,
@@ -2740,6 +2761,7 @@ async def ticket_board(request: Request, vm_only: bool = Query(False)):
                 potential_monthly_revenue=float(r[18]) if r[18] is not None else None,
                 went_live_at=str(r[19]) if r[19] else None,
                 went_live_by=r[20],
+                salescrm_id=r[21],
             )
         )
     return TicketSummaryList(tickets=tickets)
@@ -2978,4 +3000,37 @@ async def set_master_rates_valid_until(body: ValidUntilIn, request: Request):
         raise HTTPException(400, str(e))
     lanes = await master_rates.set_valid_until(db.pool(), _check_ids(body.ids), valid_until, email)
     return RateChangeResult(changed_lanes=len(lanes))
+
+
+# ---------------------------------------------------------------------------
+# SalesCRM ID (the deal a ticket belongs to; used to sync from SalesCRM later)
+# ---------------------------------------------------------------------------
+
+
+def _clean_salescrm_id(value: str | None) -> str | None:
+    v = (value or "").strip()
+    if not v:
+        return None
+    if len(v) > 64:
+        raise HTTPException(400, "SalesCRM ID is too long (max 64 characters)")
+    return v
+
+
+class SalesCrmIdIn(BaseModel):
+    salescrm_id: str | None = None
+
+
+@app.put("/api/submissions/{submission_id}/salescrm-id", status_code=204)
+async def set_salescrm_id(submission_id: int, body: SalesCrmIdIn, request: Request):
+    """The salesperson who raised a ticket (or a superadmin) sets or corrects its SalesCRM ID."""
+    email, role = await require_permission(request, "viewSubmissions")
+    value = _clean_salescrm_id(body.salescrm_id)
+    async with db.pool().acquire() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT uploaded_by FROM submissions WHERE id = %s AND submitted_at IS NOT NULL", (submission_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Ticket not found")
+        if row[0] != email and role != "superadmin":
+            raise HTTPException(403, "Only the person who raised this ticket can change its SalesCRM ID")
+        await cur.execute("UPDATE submissions SET salescrm_id = %s WHERE id = %s", (value, submission_id))
 

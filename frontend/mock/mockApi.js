@@ -56,6 +56,7 @@ const submissions = SHIPPERS.map(([name, email, pic, commodity], i) => ({
   commodity_type: commodity, high_value_fragile: i === 1,
   add_ons: i % 2 ? [{ label: "Overnight", value: "2 nights max", service: "overnight" }] : [],
   od_region: ["GJ", "EJ", "WJ", "CJ", "Kalimantan"][i],
+  salescrm_id: i === 4 ? null : `OPP-2611-${String(140 + i * 7).padStart(4, "0")}`,
   went_live_at: null, went_live_by: null,
 }));
 
@@ -236,7 +237,7 @@ export default function mockApi() {
                 oldest_open_days: open.length ? Math.max(...open.map((t) => t.aging_days)) : null,
                 editable: P.createRequest && s.uploaded_by === me && ts.every((t) => t.status === "open"),
                 od_region: s.od_region, potential_monthly_revenue: s.potential_monthly_revenue,
-                went_live_at: s.went_live_at, went_live_by: s.went_live_by,
+                went_live_at: s.went_live_at, went_live_by: s.went_live_by, salescrm_id: s.salescrm_id,
               };
             })
             .filter((t) => !vmOnly || t.vm_open_count > 0)
@@ -250,6 +251,12 @@ export default function mockApi() {
           const open = tickets.some((t) => t.submission_id === s.id && (t.status === "open" || t.status === "in_progress"));
           if (m === "POST" && open) return json(res, 400, { detail: "Some lanes are still waiting on VM" });
           Object.assign(s, m === "POST" ? { went_live_at: daysAgo(0), went_live_by: me } : { went_live_at: null, went_live_by: null });
+          return json(res, 204);
+        }
+        if ((mm = p.match(/^\/api\/submissions\/(\d+)\/salescrm-id$/)) && m === "PUT") {
+          const s = submissions.find((x) => x.id === Number(mm[1]));
+          if (!s) return json(res, 404, { detail: "Ticket not found" });
+          s.salescrm_id = (await readBody(req)).salescrm_id || null;
           return json(res, 204);
         }
         if ((mm = p.match(/^\/api\/submissions\/(\d+)\/od-region$/)) && m === "PUT") {

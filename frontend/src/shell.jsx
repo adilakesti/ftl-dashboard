@@ -50,38 +50,38 @@ const NAV = [
   [
     "Requests",
     [
-      { id: "new-request", label: "New request", icon: "plus", when: (p) => p.createRequest },
-      { id: "my-requests", label: "My requests", icon: "inbox", when: (p) => p.createRequest },
-      { id: "quick-check", label: "Quick check", icon: "search", when: (p) => p.quickCheck },
+      { id: "new-request", label: "New Request", icon: "plus", when: (p) => p.createRequest },
+      { id: "my-requests", label: "My Requests", icon: "inbox", when: (p) => p.createRequest },
+      { id: "quick-check", label: "Quick Check", icon: "search", when: (p) => p.quickCheck },
       { id: "available-routes", label: "Available Route", icon: "route", when: (p) => p.quickCheck },
     ],
   ],
   [
     "Vendor Management",
     [
-      { id: "vm-queue", label: "VM queue", icon: "queue", when: (p) => p.workTickets, count: true },
+      { id: "vm-queue", label: "VM Queue", icon: "queue", when: (p) => p.workTickets, count: true },
       { id: "prioritization", label: "Prioritization", icon: "flag", when: (p) => p.viewQueue },
-      { id: "services", label: "Extra services", icon: "tool", when: (p) => p.viewQueue },
-      { id: "rates", label: "Master vendor rates", icon: "database", when: (p) => p.manageRates },
+      { id: "services", label: "Extra Services", icon: "tool", when: (p) => p.viewQueue },
+      { id: "rates", label: "Master Vendor Rates", icon: "database", when: (p) => p.manageRates },
     ],
   ],
-  ["After deal", [{ id: "go-live", label: "Go-live", icon: "chart", when: (p) => p.viewQueue }]],
-  ["Admin", [{ id: "users", label: "Users and roles", icon: "users", when: (p) => p.manageUsers }]],
+  ["After Deal", [{ id: "go-live", label: "Go-Live", icon: "chart", when: (p) => p.viewQueue }]],
+  ["Admin", [{ id: "users", label: "Users & Roles", icon: "users", when: (p) => p.manageUsers }]],
 ];
 
 const PAGE = {
   overview: ["Overview", "Where the queue stands and what needs a look first."],
-  "new-request": ["New rate request", "Shipper details, then the lanes. Rates come back instantly where vendors exist."],
-  "my-requests": ["My requests", "Your lanes and extra-service requests, and where each one stands."],
-  "quick-check": ["Quick check", "Look up a lane's price without saving anything."],
+  "new-request": ["New Request", "Shipper details, then the lanes. Rates come back instantly where vendors exist."],
+  "my-requests": ["My Requests", "Your lanes and extra-service requests, and where each one stands."],
+  "quick-check": ["Quick Check", "Look up a lane's price without saving anything."],
   "available-routes": ["Available Route", "Routes and trucks we have vendors for. Filter to see what you can sell."],
   dashboard: ["Dashboard Ticket", "Every raised ticket, newest first. Open one to see each OD pair and its status."],
-  "vm-queue": ["VM queue", "Tickets with lanes waiting on vendor management or being worked on. SLA is 7 days per lane."],
+  "vm-queue": ["VM Queue", "Tickets with lanes waiting on vendor management or being worked on. SLA is 7 days per lane."],
   prioritization: ["Prioritization", "Lanes that keep coming back: worth a vendor push."],
-  services: ["Extra services", "Overnight, TKBM and extra drop-point prices sales asked for."],
-  rates: ["Master vendor rates", "Upload or check the vendor cost list every price is computed from."],
-  "go-live": ["Go-live", "Shippers that went live, and tickets ready to be marked live."],
-  users: ["Users and roles", "Who can sign in, and as what."],
+  services: ["Extra Services", "Overnight, TKBM and extra drop-point prices sales asked for."],
+  rates: ["Master Vendor Rates", "Upload or check the vendor cost list every price is computed from."],
+  "go-live": ["Go-Live", "Shippers that went live, and tickets ready to be marked live."],
+  users: ["Users & Roles", "Who can sign in, and as what."],
 };
 
 // Fallback for a backend that does not send `permissions` yet (mirrors backend/permissions.py).

@@ -565,8 +565,8 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
   };
 
   const checkResult = async () => {
-    if (!shipperForm.shipper_name.trim() || !shipperForm.sales_email || !shipperForm.od_region) {
-      setError("Shipper Name, Sales PIC and OD Region are required");
+    if (!shipperForm.salescrm_id.trim() || !shipperForm.shipper_name.trim() || !shipperForm.sales_email || !shipperForm.od_region) {
+      setError("SalesCRM ID, Shipper Name, Sales PIC and OD Region are required");
       return;
     }
     if (uploadMode === "csv" && !file) {
@@ -601,6 +601,7 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
       form.append("commodity_type", shipperForm.commodity_type);
       form.append("high_value_fragile", shipperForm.high_value_fragile ? "true" : "false");
       form.append("od_region", shipperForm.od_region);
+      form.append("salescrm_id", shipperForm.salescrm_id.trim());
       form.append("add_ons_json", JSON.stringify(selectedAddOns));
 
       const res = await fetch("/api/submissions/upload", { method: "POST", body: form });
@@ -804,6 +805,16 @@ export function SalesView({ tab, onTabChange, focusSubmissionId, onFocusHandled 
               <div>
                 <h2 className="font-semibold mb-3">Shipper details</h2>
                 <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-xs text-ink-500">SalesCRM ID *</label>
+                    <input
+                      className="mt-1 w-full border border-ink-200 rounded px-2 py-1.5 text-sm"
+                      value={shipperForm.salescrm_id}
+                      maxLength={64}
+                      placeholder="Deal / opportunity ID in SalesCRM"
+                      onChange={(e) => setShipperForm((f) => ({ ...f, salescrm_id: e.target.value }))}
+                    />
+                  </div>
                   <div>
                     <label className="text-xs text-ink-500">Shipper Name *</label>
                     <input

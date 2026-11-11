@@ -88,6 +88,7 @@ export const DEFAULT_SHIPPER_FORM = {
   commodity_type: "",
   high_value_fragile: false,
   od_region: "",
+  salescrm_id: "",
 };
 
 // OD Region sales pick when raising a ticket: Java regions, or the island outside Java.
