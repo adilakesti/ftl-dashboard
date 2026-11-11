@@ -105,17 +105,24 @@ def parse_csv(content: bytes) -> list[dict]:
 
 
 async def upsert_rows(pool, rows: list[dict], uploaded_by: str, filename: str | None) -> int:
+    """Rows that carry a "valid_until" key (CSV uploads) set it, blank included.
+    Rows without the key (VM fills) keep the rate's existing valid-until date,
+    unless that date has already passed — a fresh rate must not land expired."""
     async with pool.acquire() as conn, conn.cursor() as cur:
         for row in rows:
+            if "valid_until" in row:
+                valid_until_sql = "valid_until = VALUES(valid_until)"
+            else:
+                valid_until_sql = "valid_until = IF(valid_until >= CURDATE(), valid_until, NULL)"
             await cur.execute(
-                """INSERT INTO vendor_rates
+                f"""INSERT INTO vendor_rates
                    (origin, destination, vehicle_type, vendor_name, cost,
                     norm_origin, norm_destination, norm_vehicle_type, norm_vendor_name, updated_by, valid_until)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
                        cost = VALUES(cost), origin = VALUES(origin), destination = VALUES(destination),
                        vehicle_type = VALUES(vehicle_type), vendor_name = VALUES(vendor_name),
-                       updated_by = VALUES(updated_by), valid_until = VALUES(valid_until),
+                       updated_by = VALUES(updated_by), {valid_until_sql},
                        revoked_at = NULL, revoked_by = NULL, revoke_reason = NULL""",
                 (
                     row["origin"],
